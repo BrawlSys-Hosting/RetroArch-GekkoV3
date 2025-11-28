@@ -4828,6 +4828,12 @@ bool command_event(enum event_command cmd, void *data)
             char *netplay_server  = NULL;
             char *netplay_session = NULL;
             unsigned netplay_port = 0;
+            net_driver_state_t *net_st = networking_state_get_ptr();
+            bool use_gekkonet = settings->bools.netplay_backend_gekkonet;
+
+            if (net_st)
+               net_st->backend = use_gekkonet ? NETPLAY_BACKEND_GEKKONET
+                                              : NETPLAY_BACKEND_BUILTIN;
 
             command_event(CMD_EVENT_NETPLAY_DEINIT, NULL);
 
@@ -4855,9 +4861,15 @@ bool command_event(enum event_command cmd, void *data)
             if (string_is_empty(netplay_server))
                netplay_server = settings->paths.netplay_server;
             if (!netplay_port)
-               netplay_port   = settings->uints.netplay_port;
+               netplay_port   = use_gekkonet
+                  ? settings->uints.netplay_udp_port
+                  : settings->uints.netplay_port;
 
-            ret = init_netplay(netplay_server, netplay_port, netplay_session);
+            if (use_gekkonet)
+               ret = init_netplay_gekkonet(netplay_server,
+                     netplay_port, netplay_session);
+            else
+               ret = init_netplay(netplay_server, netplay_port, netplay_session);
 
             if (netplay_session)
                free(netplay_session);
@@ -4897,6 +4909,13 @@ bool command_event(enum event_command cmd, void *data)
             char netplay_server[256];
             char netplay_session[256];
             unsigned netplay_port = 0;
+            net_driver_state_t *net_st = networking_state_get_ptr();
+            bool use_gekkonet = settings->bools.netplay_backend_gekkonet;
+            bool ret;
+
+            if (net_st)
+               net_st->backend = use_gekkonet ? NETPLAY_BACKEND_GEKKONET
+                                              : NETPLAY_BACKEND_BUILTIN;
 
             command_event(CMD_EVENT_NETPLAY_DEINIT, NULL);
 
@@ -4906,12 +4925,20 @@ bool command_event(enum event_command cmd, void *data)
                &netplay_port, netplay_session, sizeof(netplay_server));
 
             if (!netplay_port)
-               netplay_port = settings->uints.netplay_port;
+               netplay_port = use_gekkonet
+                  ? settings->uints.netplay_udp_port
+                  : settings->uints.netplay_port;
 
             RARCH_LOG("[Netplay] Connecting to %s|%d (direct).\n",
                netplay_server, netplay_port);
 
-            if (!init_netplay(netplay_server, netplay_port, netplay_session))
+            if (use_gekkonet)
+               ret = init_netplay_gekkonet(netplay_server,
+                     netplay_port, netplay_session);
+            else
+               ret = init_netplay(netplay_server, netplay_port, netplay_session);
+
+            if (!ret)
             {
                command_event(CMD_EVENT_NETPLAY_DEINIT, NULL);
                return false;
@@ -4934,6 +4961,13 @@ bool command_event(enum event_command cmd, void *data)
             char netplay_server[256];
             char netplay_session[256];
             unsigned netplay_port = 0;
+            net_driver_state_t *net_st = networking_state_get_ptr();
+            bool use_gekkonet = settings->bools.netplay_backend_gekkonet;
+            bool ret;
+
+            if (net_st)
+               net_st->backend = use_gekkonet ? NETPLAY_BACKEND_GEKKONET
+                                              : NETPLAY_BACKEND_BUILTIN;
 
             command_event(CMD_EVENT_NETPLAY_DEINIT, NULL);
 
@@ -4943,12 +4977,20 @@ bool command_event(enum event_command cmd, void *data)
                &netplay_port, netplay_session, sizeof(netplay_server));
 
             if (!netplay_port)
-               netplay_port = settings->uints.netplay_port;
+               netplay_port = use_gekkonet
+                  ? settings->uints.netplay_udp_port
+                  : settings->uints.netplay_port;
 
             RARCH_LOG("[Netplay] Connecting to %s|%d (deferred).\n",
                netplay_server, netplay_port);
 
-            if (!init_netplay_deferred(netplay_server, netplay_port, netplay_session))
+            if (use_gekkonet)
+               ret = init_netplay_gekkonet(netplay_server,
+                     netplay_port, netplay_session);
+            else
+               ret = init_netplay_deferred(netplay_server, netplay_port, netplay_session);
+
+            if (!ret)
             {
                command_event(CMD_EVENT_NETPLAY_DEINIT, NULL);
                return false;

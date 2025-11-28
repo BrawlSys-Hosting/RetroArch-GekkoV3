@@ -1330,6 +1330,17 @@
 /* Publicly announce netplay */
 #define DEFAULT_NETPLAY_PUBLIC_ANNOUNCE true
 
+/* GekkoNet backend defaults */
+#define DEFAULT_NETPLAY_BACKEND_GEKKONET       false
+#define DEFAULT_GEKKONET_INPUT_PREDICTION      6
+#define DEFAULT_GEKKONET_SPECTATOR_DELAY       10
+#define DEFAULT_GEKKONET_MAX_SPECTATORS        16
+#define DEFAULT_GEKKONET_DESYNC_DETECTION      true
+#define DEFAULT_GEKKONET_LIMITED_SAVING        false
+#define DEFAULT_GEKKONET_ALLOW_LATE_JOIN       false
+#define DEFAULT_GEKKONET_LOCAL_DELAY           0
+#define DEFAULT_NETPLAY_UDP_PORT               55435
+
 /* Start netplay in spectator mode */
 #define DEFAULT_NETPLAY_START_AS_SPECTATOR false
 

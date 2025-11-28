@@ -2223,6 +2223,10 @@ static struct config_bool_setting *populate_settings_bool(
    SETTING_BOOL("netplay_show_only_installed_cores", &settings->bools.netplay_show_only_installed_cores, true, DEFAULT_NETPLAY_SHOW_ONLY_INSTALLED_CORES, false);
    SETTING_BOOL("netplay_show_passworded",       &settings->bools.netplay_show_passworded, true, DEFAULT_NETPLAY_SHOW_PASSWORDED, false);
    SETTING_BOOL("netplay_public_announce",       &settings->bools.netplay_public_announce, true, DEFAULT_NETPLAY_PUBLIC_ANNOUNCE, false);
+   SETTING_BOOL("netplay_backend_gekkonet",      &settings->bools.netplay_backend_gekkonet, true, DEFAULT_NETPLAY_BACKEND_GEKKONET, false);
+   SETTING_BOOL("gekkonet_desync_detection",     &settings->bools.gekkonet_desync_detection, true, DEFAULT_GEKKONET_DESYNC_DETECTION, false);
+   SETTING_BOOL("gekkonet_limited_saving",       &settings->bools.gekkonet_limited_saving, true, DEFAULT_GEKKONET_LIMITED_SAVING, false);
+   SETTING_BOOL("gekkonet_allow_late_join",      &settings->bools.gekkonet_allow_late_join, true, DEFAULT_GEKKONET_ALLOW_LATE_JOIN, false);
    SETTING_BOOL("netplay_start_as_spectator",    &settings->bools.netplay_start_as_spectator, false, DEFAULT_NETPLAY_START_AS_SPECTATOR, false);
    SETTING_BOOL("netplay_nat_traversal",         &settings->bools.netplay_nat_traversal, true, true, false);
    SETTING_BOOL("netplay_fade_chat",             &settings->bools.netplay_fade_chat, true, DEFAULT_NETPLAY_FADE_CHAT, false);
@@ -2597,6 +2601,7 @@ static struct config_uint_setting *populate_settings_uint(
 #ifdef HAVE_NETWORKING
    SETTING_UINT("netplay_ip_port",                    &settings->uints.netplay_port, true, RARCH_DEFAULT_PORT, false);
    SETTING_OVERRIDE(RARCH_OVERRIDE_SETTING_NETPLAY_IP_PORT);
+   SETTING_UINT("netplay_udp_port",                   &settings->uints.netplay_udp_port, true, DEFAULT_NETPLAY_UDP_PORT, false);
    SETTING_UINT("netplay_max_connections",            &settings->uints.netplay_max_connections, true, DEFAULT_NETPLAY_MAX_CONNECTIONS, false);
    SETTING_UINT("netplay_max_ping",                   &settings->uints.netplay_max_ping, true, DEFAULT_NETPLAY_MAX_PING, false);
    SETTING_UINT("netplay_chat_color_name",            &settings->uints.netplay_chat_color_name, true, DEFAULT_NETPLAY_CHAT_COLOR_NAME, false);
@@ -2605,6 +2610,10 @@ static struct config_uint_setting *populate_settings_uint(
    SETTING_UINT("netplay_input_latency_frames_range", &settings->uints.netplay_input_latency_frames_range, true, 0, false);
    SETTING_UINT("netplay_share_digital",              &settings->uints.netplay_share_digital, true, DEFAULT_NETPLAY_SHARE_DIGITAL, false);
    SETTING_UINT("netplay_share_analog",               &settings->uints.netplay_share_analog,  true, DEFAULT_NETPLAY_SHARE_ANALOG, false);
+   SETTING_UINT("gekkonet_input_prediction",          &settings->uints.gekkonet_input_prediction, true, DEFAULT_GEKKONET_INPUT_PREDICTION, false);
+   SETTING_UINT("gekkonet_spectator_delay",           &settings->uints.gekkonet_spectator_delay, true, DEFAULT_GEKKONET_SPECTATOR_DELAY, false);
+   SETTING_UINT("gekkonet_max_spectators",            &settings->uints.gekkonet_max_spectators, true, DEFAULT_GEKKONET_MAX_SPECTATORS, false);
+   SETTING_UINT("gekkonet_local_delay",               &settings->uints.gekkonet_local_delay, true, DEFAULT_GEKKONET_LOCAL_DELAY, false);
 #endif
 #ifdef HAVE_COMMAND
    SETTING_UINT("network_cmd_port",              &settings->uints.network_cmd_port,    true, DEFAULT_NETWORK_CMD_PORT, false);

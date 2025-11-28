@@ -32,10 +32,18 @@
 #include <net/net_compat.h>
 
 #include "netplay_defines.h"
+#include "netplay_gekkonet.h"
 
 #include "../../msg_hash.h"
+#include "../../retroarch_types.h"
 
 #include "../natt.h"
+
+typedef enum netplay_backend
+{
+   NETPLAY_BACKEND_BUILTIN  = 0,
+   NETPLAY_BACKEND_GEKKONET = 1
+} netplay_backend_t;
 
 typedef struct netplay netplay_t;
 
@@ -152,6 +160,12 @@ typedef struct
    struct retro_netpacket_callback *core_netpacket_interface;
    /* Used while Netplay is running */
    netplay_t *data;
+   ra_gekkonet_ctx_t    gekkonet;
+   ra_gekkonet_input_t  gekkonet_input;
+   retro_callbacks_t    gekkonet_cbs;
+   int                  gekkonet_local_actor;
+   bool                 gekkonet_active;
+   netplay_backend_t    backend;
    netplay_client_info_t *client_info;
    size_t client_info_count;
 #ifdef HAVE_NETPLAYDISCOVERY
@@ -192,6 +206,8 @@ void netplay_rooms_free(void);
  **/
 bool init_netplay(const char *server, unsigned port, const char *mitm_session);
 bool init_netplay_deferred(const char *server, unsigned port,
+   const char *mitm_session);
+bool init_netplay_gekkonet(const char *server, unsigned port,
    const char *mitm_session);
 void deinit_netplay(void);
 

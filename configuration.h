@@ -223,6 +223,7 @@ typedef struct settings
       unsigned input_max_users;
 
       unsigned netplay_port;
+      unsigned netplay_udp_port;
       unsigned netplay_max_connections;
       unsigned netplay_max_ping;
       unsigned netplay_chat_color_name;
@@ -231,6 +232,10 @@ typedef struct settings
       unsigned netplay_input_latency_frames_range;
       unsigned netplay_share_digital;
       unsigned netplay_share_analog;
+      unsigned gekkonet_input_prediction;
+      unsigned gekkonet_spectator_delay;
+      unsigned gekkonet_max_spectators;
+      unsigned gekkonet_local_delay;
       unsigned bundle_assets_extract_version_current;
       unsigned bundle_assets_extract_last_version;
       unsigned content_history_size;
@@ -927,6 +932,10 @@ typedef struct settings
       bool netplay_show_only_installed_cores;
       bool netplay_show_passworded;
       bool netplay_public_announce;
+      bool netplay_backend_gekkonet;
+      bool gekkonet_desync_detection;
+      bool gekkonet_limited_saving;
+      bool gekkonet_allow_late_join;
       bool netplay_start_as_spectator;
       bool netplay_fade_chat;
       bool netplay_allow_pausing;

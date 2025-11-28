@@ -2359,7 +2359,19 @@ ifeq ($(HAVE_NETWORKING), 1)
    DEFINES += -DHAVE_NETWORK_CMD
    OBJ += \
 	  network/netplay/netplay_frontend.o \
-	  network/netplay/netplay_room_parse.o
+	  network/netplay/netplay_room_parse.o \
+	  network/netplay/netplay_gekkonet.o \
+	  deps/gekkonet/src/gekko.o \
+	  deps/gekkonet/src/gekkonet.o \
+	  deps/gekkonet/src/backend.o \
+	  deps/gekkonet/src/event.o \
+	  deps/gekkonet/src/input.o \
+	  deps/gekkonet/src/net.o \
+	  deps/gekkonet/src/player.o \
+	  deps/gekkonet/src/storage.o \
+	  deps/gekkonet/src/sync.o
+   INCLUDE_DIRS += -Ideps/gekkonet/include
+   DEFINES += -DGEKKONET_NO_ASIO
 
    # RetroAchievements
    ifeq ($(HAVE_CHEEVOS), 1)
