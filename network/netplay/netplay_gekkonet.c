@@ -653,42 +653,12 @@ static void ra_gekkonet_handle_save(ra_gekkonet_ctx_t    *ctx,
     if (!ctx || !ev || !ctx->save_cb)
         return;
 
-    /* Ignore negative frames to avoid pre-start snapshots. */
-    if (ev->data.save.frame < 0)
-    {
-        GEKKONET_WARN("save_state skipped (frame=%d < 0)", ev->data.save.frame);
-        if (ev->data.save.state_len)
-            *ev->data.save.state_len = 0;
-        if (ev->data.save.checksum)
-            *ev->data.save.checksum = 0;
-        return;
-    }
-
-    if (!ev->data.save.state || !ev->data.save.state_len)
-        return;
-
-    /* Clamp reported size to our known buffer size to avoid overruns. */
-    if (*ev->data.save.state_len > ctx->state_size)
-        *ev->data.save.state_len = ctx->state_size;
-
-    GEKKONET_LOG("save begin frame=%d requested_len=%u", ev->data.save.frame,
-        ev->data.save.state_len ? *ev->data.save.state_len : 0);
-
-    if (!ctx->save_cb(ev->data.save.state,
-                      *ev->data.save.state_len,
-                      ev->data.save.state_len,
-                      ev->data.save.checksum))
-    {
-        GEKKONET_WARN("save_state callback failed (frame=%d)", ev->data.save.frame);
-        return;
-    }
-
-    ctx->ready_for_state = true;
-
-    GEKKONET_LOG("save frame=%d len=%u crc=%u",
-        ev->data.save.frame,
-        ev->data.save.state_len ? *ev->data.save.state_len : 0,
-        ev->data.save.checksum ? *ev->data.save.checksum : 0);
+    /* Temporarily disable saving to isolate crash source. */
+    GEKKONET_WARN("save_state skipped (temporarily disabled, frame=%d)", ev->data.save.frame);
+    if (ev->data.save.state_len)
+        *ev->data.save.state_len = 0;
+    if (ev->data.save.checksum)
+        *ev->data.save.checksum = 0;
 }
 
 static void ra_gekkonet_handle_load(ra_gekkonet_ctx_t    *ctx,
@@ -697,24 +667,8 @@ static void ra_gekkonet_handle_load(ra_gekkonet_ctx_t    *ctx,
     if (!ctx || !ev || !ctx->load_cb)
         return;
 
-    /* Ignore negative frames to avoid pre-start snapshots. */
-    if (ev->data.load.frame < 0)
-    {
-        GEKKONET_WARN("load_state skipped (frame=%d < 0)", ev->data.load.frame);
-        return;
-    }
-
-    if (!ev->data.load.state || ev->data.load.state_len == 0)
-        return;
-
-    if (!ctx->load_cb(ev->data.load.state, ev->data.load.state_len))
-    {
-        GEKKONET_WARN("load_state callback failed (frame=%d, len=%u)",
-            ev->data.load.frame, ev->data.load.state_len);
-        return;
-    }
-
-    GEKKONET_LOG("load frame=%d len=%u", ev->data.load.frame, ev->data.load.state_len);
+    /* Temporarily disable loading to isolate crash source. */
+    GEKKONET_WARN("load_state skipped (temporarily disabled, frame=%d)", ev->data.load.frame);
 }
 
 static void ra_gekkonet_handle_advance(ra_gekkonet_ctx_t    *ctx,
