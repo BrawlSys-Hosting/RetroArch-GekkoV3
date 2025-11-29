@@ -451,13 +451,15 @@ bool ra_gekkonet_init(ra_gekkonet_ctx_t              *ctx,
     ctx->cfg.post_sync_joining       = params->post_sync_joining;
     ctx->cfg.desync_detection        = params->desync_detection;
 
-   ctx->current_input_buf = calloc(1, params->input_size);
-   if (!ctx->current_input_buf)
-   {
-       gekko_destroy(ctx->session);
-       ctx->session = NULL;
-       return false;
-   }
+    ctx->current_input_buf = calloc(1, params->input_size);
+    if (!ctx->current_input_buf)
+    {
+        GEKKONET_ERR("allocating input buffer (%u bytes) failed",
+                     params->input_size);
+        gekko_destroy(ctx->session);
+        ctx->session = NULL;
+        return false;
+    }
    ctx->current_input = ctx->current_input_buf;
 
    /* Use a simple UDP adapter bound to the requested port. */
@@ -658,7 +660,13 @@ static void ra_gekkonet_handle_save(ra_gekkonet_ctx_t    *ctx,
                       ev->data.save.checksum))
     {
         GEKKONET_WARN("save_state callback failed (frame=%d)", ev->data.save.frame);
+        return;
     }
+
+    GEKKONET_LOG("save frame=%d len=%u crc=%u",
+        ev->data.save.frame,
+        ev->data.save.state_len ? *ev->data.save.state_len : 0,
+        ev->data.save.checksum ? *ev->data.save.checksum : 0);
 }
 
 static void ra_gekkonet_handle_load(ra_gekkonet_ctx_t    *ctx,
@@ -671,7 +679,13 @@ static void ra_gekkonet_handle_load(ra_gekkonet_ctx_t    *ctx,
         return;
 
     if (!ctx->load_cb(ev->data.load.state, ev->data.load.state_len))
-        GEKKONET_WARN("load_state callback failed (frame=%d)", ev->data.load.frame);
+    {
+        GEKKONET_WARN("load_state callback failed (frame=%d, len=%u)",
+            ev->data.load.frame, ev->data.load.state_len);
+        return;
+    }
+
+    GEKKONET_LOG("load frame=%d len=%u", ev->data.load.frame, ev->data.load.state_len);
 }
 
 static void ra_gekkonet_handle_advance(ra_gekkonet_ctx_t    *ctx,
@@ -716,6 +730,8 @@ static void ra_gekkonet_process_game_events(ra_gekkonet_ctx_t *ctx)
     if (!events || count <= 0)
         return;
 
+    GEKKONET_LOG("game events: %d", count);
+
     for (int i = 0; i < count; i++)
     {
         const GekkoGameEvent *ev = events[i];
@@ -751,6 +767,8 @@ static void ra_gekkonet_process_session_events(ra_gekkonet_ctx_t *ctx)
     events = gekko_session_events(ctx->session, &count);
     if (!events || count <= 0)
         return;
+
+    GEKKONET_LOG("session events: %d", count);
 
     for (int i = 0; i < count; i++)
     {
