@@ -26,6 +26,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 #pragma once
 
+#ifndef GEKKONET_NO_ASIO
+#define GEKKONET_NO_ASIO 1
+#endif
+
 #include <stdbool.h>
 
 #ifdef __cplusplus
