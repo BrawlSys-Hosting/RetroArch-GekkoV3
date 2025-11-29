@@ -22874,6 +22874,21 @@ static bool setting_append_list(
 
             CONFIG_BOOL(
                   list, list_info,
+                  &settings->bools.netplay_backend_gekkonet,
+                  MENU_ENUM_LABEL_NETPLAY_BACKEND,
+                  MENU_ENUM_LABEL_VALUE_NETPLAY_BACKEND,
+                  DEFAULT_NETPLAY_BACKEND_GEKKONET,
+                  MENU_ENUM_LABEL_VALUE_OFF,
+                  MENU_ENUM_LABEL_VALUE_ON,
+                  &group_info,
+                  &subgroup_info,
+                  parent_group,
+                  general_write_handler,
+                  general_read_handler,
+                  SD_FLAG_NONE);
+
+            CONFIG_BOOL(
+                  list, list_info,
                   &settings->bools.netplay_show_only_connectable,
                   MENU_ENUM_LABEL_NETPLAY_SHOW_ONLY_CONNECTABLE,
                   MENU_ENUM_LABEL_VALUE_NETPLAY_SHOW_ONLY_CONNECTABLE,
@@ -23008,6 +23023,22 @@ static bool setting_append_list(
                   MENU_ENUM_LABEL_NETPLAY_TCP_UDP_PORT,
                   MENU_ENUM_LABEL_VALUE_NETPLAY_TCP_UDP_PORT,
                   RARCH_DEFAULT_PORT,
+                  &group_info,
+                  &subgroup_info,
+                  parent_group,
+                  general_write_handler,
+                  general_read_handler);
+            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
+            menu_settings_list_current_add_range(list, list_info, 0, 65535, 1, true, true);
+            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ALLOW_INPUT);
+            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ADVANCED);
+
+            CONFIG_UINT(
+                  list, list_info,
+                  &settings->uints.netplay_udp_port,
+                  MENU_ENUM_LABEL_NETPLAY_UDP_PORT,
+                  MENU_ENUM_LABEL_VALUE_NETPLAY_UDP_PORT,
+                  DEFAULT_NETPLAY_UDP_PORT,
                   &group_info,
                   &subgroup_info,
                   parent_group,
@@ -23247,6 +23278,118 @@ static bool setting_append_list(
                   MENU_ENUM_LABEL_NETPLAY_NAT_TRAVERSAL,
                   MENU_ENUM_LABEL_VALUE_NETPLAY_NAT_TRAVERSAL,
                   true,
+                  MENU_ENUM_LABEL_VALUE_OFF,
+                  MENU_ENUM_LABEL_VALUE_ON,
+                  &group_info,
+                  &subgroup_info,
+                  parent_group,
+                  general_write_handler,
+                  general_read_handler,
+                  SD_FLAG_NONE);
+            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ADVANCED);
+
+            CONFIG_UINT(
+                  list, list_info,
+                  &settings->uints.gekkonet_input_prediction,
+                  MENU_ENUM_LABEL_GEKKONET_INPUT_PREDICTION,
+                  MENU_ENUM_LABEL_VALUE_GEKKONET_INPUT_PREDICTION,
+                  DEFAULT_GEKKONET_INPUT_PREDICTION,
+                  &group_info,
+                  &subgroup_info,
+                  parent_group,
+                  general_write_handler,
+                  general_read_handler);
+            (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_SPINBOX;
+            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
+            menu_settings_list_current_add_range(list, list_info, 0, 30, 1, true, true);
+            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ADVANCED);
+
+            CONFIG_UINT(
+                  list, list_info,
+                  &settings->uints.gekkonet_spectator_delay,
+                  MENU_ENUM_LABEL_GEKKONET_SPECTATOR_DELAY,
+                  MENU_ENUM_LABEL_VALUE_GEKKONET_SPECTATOR_DELAY,
+                  DEFAULT_GEKKONET_SPECTATOR_DELAY,
+                  &group_info,
+                  &subgroup_info,
+                  parent_group,
+                  general_write_handler,
+                  general_read_handler);
+            (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_SPINBOX;
+            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
+            menu_settings_list_current_add_range(list, list_info, 0, 120, 1, true, true);
+            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ADVANCED);
+
+            CONFIG_UINT(
+                  list, list_info,
+                  &settings->uints.gekkonet_max_spectators,
+                  MENU_ENUM_LABEL_GEKKONET_MAX_SPECTATORS,
+                  MENU_ENUM_LABEL_VALUE_GEKKONET_MAX_SPECTATORS,
+                  DEFAULT_GEKKONET_MAX_SPECTATORS,
+                  &group_info,
+                  &subgroup_info,
+                  parent_group,
+                  general_write_handler,
+                  general_read_handler);
+            (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_SPINBOX;
+            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
+            menu_settings_list_current_add_range(list, list_info, 0, 64, 1, true, true);
+            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ADVANCED);
+
+            CONFIG_UINT(
+                  list, list_info,
+                  &settings->uints.gekkonet_local_delay,
+                  MENU_ENUM_LABEL_GEKKONET_LOCAL_DELAY,
+                  MENU_ENUM_LABEL_VALUE_GEKKONET_LOCAL_DELAY,
+                  DEFAULT_GEKKONET_LOCAL_DELAY,
+                  &group_info,
+                  &subgroup_info,
+                  parent_group,
+                  general_write_handler,
+                  general_read_handler);
+            (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_SPINBOX;
+            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
+            menu_settings_list_current_add_range(list, list_info, 0, 30, 1, true, true);
+            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ADVANCED);
+
+            CONFIG_BOOL(
+                  list, list_info,
+                  &settings->bools.gekkonet_desync_detection,
+                  MENU_ENUM_LABEL_GEKKONET_DESYNC_DETECTION,
+                  MENU_ENUM_LABEL_VALUE_GEKKONET_DESYNC_DETECTION,
+                  DEFAULT_GEKKONET_DESYNC_DETECTION,
+                  MENU_ENUM_LABEL_VALUE_OFF,
+                  MENU_ENUM_LABEL_VALUE_ON,
+                  &group_info,
+                  &subgroup_info,
+                  parent_group,
+                  general_write_handler,
+                  general_read_handler,
+                  SD_FLAG_NONE);
+            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ADVANCED);
+
+            CONFIG_BOOL(
+                  list, list_info,
+                  &settings->bools.gekkonet_limited_saving,
+                  MENU_ENUM_LABEL_GEKKONET_LIMITED_SAVING,
+                  MENU_ENUM_LABEL_VALUE_GEKKONET_LIMITED_SAVING,
+                  DEFAULT_GEKKONET_LIMITED_SAVING,
+                  MENU_ENUM_LABEL_VALUE_OFF,
+                  MENU_ENUM_LABEL_VALUE_ON,
+                  &group_info,
+                  &subgroup_info,
+                  parent_group,
+                  general_write_handler,
+                  general_read_handler,
+                  SD_FLAG_NONE);
+            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ADVANCED);
+
+            CONFIG_BOOL(
+                  list, list_info,
+                  &settings->bools.gekkonet_allow_late_join,
+                  MENU_ENUM_LABEL_GEKKONET_ALLOW_LATE_JOIN,
+                  MENU_ENUM_LABEL_VALUE_GEKKONET_ALLOW_LATE_JOIN,
+                  DEFAULT_GEKKONET_ALLOW_LATE_JOIN,
                   MENU_ENUM_LABEL_VALUE_OFF,
                   MENU_ENUM_LABEL_VALUE_ON,
                   &group_info,
