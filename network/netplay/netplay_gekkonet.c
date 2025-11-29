@@ -460,8 +460,9 @@ bool ra_gekkonet_init(ra_gekkonet_ctx_t              *ctx,
        ctx->session = NULL;
        return false;
    }
-   ctx->current_input = ctx->current_input_buf;
-   ctx->ready_for_state = false;
+    ctx->current_input = ctx->current_input_buf;
+    /* Allow saves/loads immediately; some backends request a save before any advance. */
+    ctx->ready_for_state = true;
 
    /* Use a simple UDP adapter bound to the requested port. */
    ctx->adapter = (GekkoNetAdapter*)ra_gekkonet_udp_adapter_create(params->port);
@@ -653,17 +654,6 @@ static void ra_gekkonet_handle_save(ra_gekkonet_ctx_t    *ctx,
         return;
 
     /* Skip early saves until we have advanced at least once. */
-    if (!ctx->ready_for_state || ev->data.save.frame < 0)
-    {
-        GEKKONET_WARN("save_state skipped (frame=%d, ready=%d)",
-                      ev->data.save.frame, ctx->ready_for_state ? 1 : 0);
-        if (ev->data.save.state_len)
-            *ev->data.save.state_len = 0;
-        if (ev->data.save.checksum)
-            *ev->data.save.checksum = 0;
-        return;
-    }
-
     if (!ev->data.save.state || !ev->data.save.state_len)
         return;
 
@@ -696,12 +686,6 @@ static void ra_gekkonet_handle_load(ra_gekkonet_ctx_t    *ctx,
 {
     if (!ctx || !ev || !ctx->load_cb)
         return;
-
-    if (!ctx->ready_for_state || ev->data.load.frame < 0)
-    {
-        GEKKONET_WARN("load_state skipped (not ready; frame=%d)", ev->data.load.frame);
-        return;
-    }
 
     if (!ev->data.load.state || ev->data.load.state_len == 0)
         return;
