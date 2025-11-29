@@ -39,7 +39,7 @@ jobs:
       - name: Compile RA
         working-directory: "${{github.workspace}}/pkg/msvc${{ matrix.version == 'UWP' && '-uwp' || ''}}"
         run: |
-          msbuild -p:"Configuration=${{matrix.configuration}}" -p:"Platform=${{matrix.platform}}" -p:"DebugType=full" -p:"DebugSymbols=true" .\RetroArch-msvc${{matrix.version}}.sln
+          msbuild -p:"Configuration=${{matrix.configuration}}" -p:"Platform=${{matrix.platform}}" -p:DebugType=full -p:DebugSymbols=true .\RetroArch-msvc${{matrix.version}}.sln
 
       - name: Get short SHA
         id: slug
