@@ -7606,6 +7606,10 @@ MSG_HASH(
    "Netplay Backend (GekkoNet)"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_NETPLAY_BACKEND,
+   "Netplay Backend (GekkoNet)"
+   )
+MSG_HASH(
    MENU_ENUM_SUBLABEL_NETPLAY_BACKEND,
    "Enable the GekkoNet rollback backend instead of the built-in netplay implementation."
    )
@@ -7679,6 +7683,10 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_NETPLAY_UDP_PORT,
+   "Netplay UDP Port"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_NETPLAY_UDP_PORT,
    "Netplay UDP Port"
    )
 MSG_HASH(
@@ -7758,11 +7766,19 @@ MSG_HASH(
    "GekkoNet Prediction Window"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_GEKKONET_INPUT_PREDICTION,
+   "GekkoNet Prediction Window"
+   )
+MSG_HASH(
    MENU_ENUM_SUBLABEL_GEKKONET_INPUT_PREDICTION,
    "Number of frames of input prediction before rollback."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_GEKKONET_SPECTATOR_DELAY,
+   "GekkoNet Spectator Delay"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_GEKKONET_SPECTATOR_DELAY,
    "GekkoNet Spectator Delay"
    )
 MSG_HASH(
@@ -7774,11 +7790,19 @@ MSG_HASH(
    "GekkoNet Max Spectators"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_GEKKONET_MAX_SPECTATORS,
+   "GekkoNet Max Spectators"
+   )
+MSG_HASH(
    MENU_ENUM_SUBLABEL_GEKKONET_MAX_SPECTATORS,
    "Maximum number of spectators allowed in a GekkoNet session."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_GEKKONET_LOCAL_DELAY,
+   "GekkoNet Local Input Delay"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_GEKKONET_LOCAL_DELAY,
    "GekkoNet Local Input Delay"
    )
 MSG_HASH(
@@ -7790,6 +7814,10 @@ MSG_HASH(
    "GekkoNet Desync Detection"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_GEKKONET_DESYNC_DETECTION,
+   "GekkoNet Desync Detection"
+   )
+MSG_HASH(
    MENU_ENUM_SUBLABEL_GEKKONET_DESYNC_DETECTION,
    "Enable CRC-based desync detection during rollback."
    )
@@ -7798,11 +7826,19 @@ MSG_HASH(
    "GekkoNet Limited Saving"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_GEKKONET_LIMITED_SAVING,
+   "GekkoNet Limited Saving"
+   )
+MSG_HASH(
    MENU_ENUM_SUBLABEL_GEKKONET_LIMITED_SAVING,
    "Use smaller save buffers to reduce network traffic and memory."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_GEKKONET_ALLOW_LATE_JOIN,
+   "GekkoNet Allow Late Join"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_GEKKONET_ALLOW_LATE_JOIN,
    "GekkoNet Allow Late Join"
    )
 MSG_HASH(
