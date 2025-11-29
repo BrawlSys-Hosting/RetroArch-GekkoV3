@@ -9181,12 +9181,14 @@ unsigned menu_displaylist_build_list(
             bool network_remote_enable   = settings->bools.network_remote_enable;
 
             menu_displaylist_build_info_selective_t build_list[] = {
+               {MENU_ENUM_LABEL_NETPLAY_BACKEND,                  PARSE_ONLY_BOOL,   true},
                {MENU_ENUM_LABEL_NETPLAY_PUBLIC_ANNOUNCE,            PARSE_ONLY_BOOL,   true},
                {MENU_ENUM_LABEL_NETPLAY_USE_MITM_SERVER,            PARSE_ONLY_BOOL,   true},
                {MENU_ENUM_LABEL_NETPLAY_MITM_SERVER,                PARSE_ONLY_STRING, false},
                {MENU_ENUM_LABEL_NETPLAY_CUSTOM_MITM_SERVER,         PARSE_ONLY_STRING, false},
                {MENU_ENUM_LABEL_NETPLAY_IP_ADDRESS,                 PARSE_ONLY_STRING, true},
                {MENU_ENUM_LABEL_NETPLAY_TCP_UDP_PORT,               PARSE_ONLY_UINT,   true},
+               {MENU_ENUM_LABEL_NETPLAY_UDP_PORT,                   PARSE_ONLY_UINT,   true},
                {MENU_ENUM_LABEL_NETPLAY_MAX_CONNECTIONS,            PARSE_ONLY_UINT,   true},
                {MENU_ENUM_LABEL_NETPLAY_MAX_PING,                   PARSE_ONLY_UINT,   true},
                {MENU_ENUM_LABEL_NETPLAY_PASSWORD,                   PARSE_ONLY_STRING, true},
@@ -9204,6 +9206,13 @@ unsigned menu_displaylist_build_list(
                {MENU_ENUM_LABEL_NETPLAY_NAT_TRAVERSAL,              PARSE_ONLY_BOOL,   true},
                {MENU_ENUM_LABEL_NETPLAY_SHARE_DIGITAL,              PARSE_ONLY_UINT,   true},
                {MENU_ENUM_LABEL_NETPLAY_SHARE_ANALOG,               PARSE_ONLY_UINT,   true},
+               {MENU_ENUM_LABEL_GEKKONET_INPUT_PREDICTION,          PARSE_ONLY_UINT,   true},
+               {MENU_ENUM_LABEL_GEKKONET_SPECTATOR_DELAY,           PARSE_ONLY_UINT,   true},
+               {MENU_ENUM_LABEL_GEKKONET_MAX_SPECTATORS,            PARSE_ONLY_UINT,   true},
+               {MENU_ENUM_LABEL_GEKKONET_LOCAL_DELAY,               PARSE_ONLY_UINT,   true},
+               {MENU_ENUM_LABEL_GEKKONET_DESYNC_DETECTION,          PARSE_ONLY_BOOL,   true},
+               {MENU_ENUM_LABEL_GEKKONET_LIMITED_SAVING,            PARSE_ONLY_BOOL,   true},
+               {MENU_ENUM_LABEL_GEKKONET_ALLOW_LATE_JOIN,           PARSE_ONLY_BOOL,   true},
             };
 
             for (i = 0; i < ARRAY_SIZE(build_list); i++)
@@ -12356,6 +12365,8 @@ bool menu_displaylist_ctl(enum menu_displaylist_ctl_state type,
                bool netplay_use_mitm_server = settings->bools.netplay_use_mitm_server;
 
                menu_displaylist_build_info_selective_t build_list[] = {
+                  {MENU_ENUM_LABEL_NETPLAY_BACKEND,             PARSE_ONLY_BOOL,   true},
+                  {MENU_ENUM_LABEL_NETPLAY_UDP_PORT,            PARSE_ONLY_UINT,   true},
                   {MENU_ENUM_LABEL_NETPLAY_TCP_UDP_PORT,       PARSE_ONLY_UINT,   true},
                   {MENU_ENUM_LABEL_NETPLAY_MAX_CONNECTIONS,    PARSE_ONLY_UINT,   true},
                   {MENU_ENUM_LABEL_NETPLAY_MAX_PING,           PARSE_ONLY_UINT,   true},
@@ -12369,6 +12380,13 @@ bool menu_displaylist_ctl(enum menu_displaylist_ctl_state type,
                   {MENU_ENUM_LABEL_NETPLAY_ALLOW_SLAVES,       PARSE_ONLY_BOOL,   true},
                   {MENU_ENUM_LABEL_NETPLAY_REQUIRE_SLAVES,     PARSE_ONLY_BOOL,   false},
                   {MENU_ENUM_LABEL_NETPLAY_NAT_TRAVERSAL,      PARSE_ONLY_BOOL,   true},
+                  {MENU_ENUM_LABEL_GEKKONET_INPUT_PREDICTION,   PARSE_ONLY_UINT,   true},
+                  {MENU_ENUM_LABEL_GEKKONET_SPECTATOR_DELAY,    PARSE_ONLY_UINT,   true},
+                  {MENU_ENUM_LABEL_GEKKONET_MAX_SPECTATORS,     PARSE_ONLY_UINT,   true},
+                  {MENU_ENUM_LABEL_GEKKONET_LOCAL_DELAY,        PARSE_ONLY_UINT,   true},
+                  {MENU_ENUM_LABEL_GEKKONET_DESYNC_DETECTION,   PARSE_ONLY_BOOL,   true},
+                  {MENU_ENUM_LABEL_GEKKONET_LIMITED_SAVING,     PARSE_ONLY_BOOL,   true},
+                  {MENU_ENUM_LABEL_GEKKONET_ALLOW_LATE_JOIN,    PARSE_ONLY_BOOL,   true},
                };
 
                menu_entries_clear(list);
