@@ -26,6 +26,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 #pragma once
 
+/* Always build/consume statically inside RetroArch. */
+#ifndef GEKKONET_STATIC
+#define GEKKONET_STATIC 1
+#endif
+
 #ifndef GEKKONET_NO_ASIO
 #define GEKKONET_NO_ASIO 1
 #endif
