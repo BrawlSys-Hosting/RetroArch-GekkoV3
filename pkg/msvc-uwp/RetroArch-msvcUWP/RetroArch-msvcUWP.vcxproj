@@ -228,6 +228,20 @@
     <ClCompile Include="..\..\..\griffin\griffin_glslang.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="..\..\network\netplay\netplay_gekkonet.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="..\..\deps\gekkonet\src\backend.cpp" />
+    <ClCompile Include="..\..\deps\gekkonet\src\event.cpp" />
+    <ClCompile Include="..\..\deps\gekkonet\src\gekko.cpp" />
+    <ClCompile Include="..\..\deps\gekkonet\src\gekkonet.cpp" />
+    <ClCompile Include="..\..\deps\gekkonet\src\input.cpp" />
+    <ClCompile Include="..\..\deps\gekkonet\src\net.cpp" />
+    <ClCompile Include="..\..\deps\gekkonet\src\player.cpp" />
+    <ClCompile Include="..\..\deps\gekkonet\src\storage.cpp" />
+    <ClCompile Include="..\..\deps\gekkonet\src\sync.cpp" />
+  </ItemGroup>
+  <ItemGroup>
     <ClCompile Include="..\..\..\uwp\uwp_main.cpp" />
   </ItemGroup>
   <ItemGroup>
