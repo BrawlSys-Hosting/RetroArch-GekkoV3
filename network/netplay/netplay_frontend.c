@@ -374,7 +374,8 @@ static bool netplay_gekkonet_init_session(net_driver_state_t *net_st,
 {
    ra_gekkonet_params_t params;
    settings_t *settings = config_get_ptr();
-   unsigned max_players = settings ? settings->uints.netplay_max_connections : MAX_USERS;
+   /* Only count actors we actually add: always 1 local, +1 if connecting to a remote host. */
+   unsigned max_players = 1 + ((server && *server) ? 1 : 0);
    unsigned max_specs   = settings ? settings->uints.gekkonet_max_spectators : 0;
    size_t state_sz      = core_serialize_size();
 
