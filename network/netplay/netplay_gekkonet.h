@@ -80,6 +80,7 @@ typedef struct ra_gekkonet_ctx
    unsigned int state_size;
    unsigned int input_size;
 
+   void       *current_input_buf;
    const void *current_input;
 
    char       **remote_addrs;

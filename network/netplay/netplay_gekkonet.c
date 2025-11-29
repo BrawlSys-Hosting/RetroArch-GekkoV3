@@ -425,13 +425,14 @@ bool ra_gekkonet_init(ra_gekkonet_ctx_t              *ctx,
 
     memset(ctx, 0, sizeof(*ctx));
 
-    ctx->save_cb      = save_cb;
-    ctx->load_cb      = load_cb;
-    ctx->run_frame_cb = NULL; /* set later */
-    ctx->state_size   = params->state_size;
-    ctx->input_size   = params->input_size;
-    ctx->current_input = NULL;
-    ctx->owns_adapter = false;
+   ctx->save_cb      = save_cb;
+   ctx->load_cb      = load_cb;
+   ctx->run_frame_cb = NULL; /* set later */
+   ctx->state_size   = params->state_size;
+   ctx->input_size   = params->input_size;
+   ctx->current_input_buf = NULL;
+   ctx->current_input = NULL;
+   ctx->owns_adapter = false;
 
     if (!gekko_create(&ctx->session))
     {
@@ -450,7 +451,16 @@ bool ra_gekkonet_init(ra_gekkonet_ctx_t              *ctx,
     ctx->cfg.post_sync_joining       = params->post_sync_joining;
     ctx->cfg.desync_detection        = params->desync_detection;
 
-    /* Use a simple UDP adapter bound to the requested port. */
+   ctx->current_input_buf = calloc(1, params->input_size);
+   if (!ctx->current_input_buf)
+   {
+       gekko_destroy(ctx->session);
+       ctx->session = NULL;
+       return false;
+   }
+   ctx->current_input = ctx->current_input_buf;
+
+   /* Use a simple UDP adapter bound to the requested port. */
     ctx->adapter = (GekkoNetAdapter*)ra_gekkonet_udp_adapter_create(params->port);
     if (!ctx->adapter)
     {
@@ -518,8 +528,12 @@ void ra_gekkonet_deinit(ra_gekkonet_ctx_t *ctx)
     ctx->remote_addrs_count = 0;
     ctx->remote_addrs_cap   = 0;
 
+    if (ctx->current_input_buf)
+        free(ctx->current_input_buf);
+    ctx->current_input_buf  = NULL;
+    ctx->current_input      = NULL;
+
     ctx->session       = NULL;
-    ctx->current_input = NULL;
     ctx->owns_adapter  = false;
     ctx->active        = false;
     ctx->local_actor_count  = 0;
@@ -666,13 +680,23 @@ static void ra_gekkonet_handle_advance(ra_gekkonet_ctx_t    *ctx,
     if (!ctx || !ev)
         return;
 
-    ctx->current_input = ev->data.adv.inputs;
+    if (!ctx->current_input_buf || !ev->data.adv.inputs)
+        return;
 
-    if (ev->data.adv.input_len != ctx->input_size)
+    if (ev->data.adv.input_len < ctx->input_size)
     {
         GEKKONET_WARN("input blob size mismatch (got %u, expected %u)",
                       ev->data.adv.input_len, ctx->input_size);
+        memset(ctx->current_input_buf, 0, ctx->input_size);
+        memcpy(ctx->current_input_buf, ev->data.adv.inputs,
+               ev->data.adv.input_len);
     }
+    else
+    {
+        memcpy(ctx->current_input_buf, ev->data.adv.inputs, ctx->input_size);
+    }
+
+    ctx->current_input = ctx->current_input_buf;
 
     if (ctx->run_frame_cb)
         ctx->run_frame_cb();
