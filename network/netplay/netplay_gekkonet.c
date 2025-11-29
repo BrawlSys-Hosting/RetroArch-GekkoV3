@@ -652,16 +652,6 @@ static void ra_gekkonet_handle_save(ra_gekkonet_ctx_t    *ctx,
     if (!ctx || !ev || !ctx->save_cb)
         return;
 
-    if (!ctx->ready_for_state)
-    {
-        GEKKONET_WARN("save_state skipped (not ready; frame=%d)", ev->data.save.frame);
-        if (ev->data.save.state_len)
-            *ev->data.save.state_len = 0;
-        if (ev->data.save.checksum)
-            *ev->data.save.checksum = 0;
-        return;
-    }
-
     if (!ev->data.save.state || !ev->data.save.state_len)
         return;
 
@@ -673,6 +663,8 @@ static void ra_gekkonet_handle_save(ra_gekkonet_ctx_t    *ctx,
         GEKKONET_WARN("save_state callback failed (frame=%d)", ev->data.save.frame);
         return;
     }
+
+    ctx->ready_for_state = true;
 
     GEKKONET_LOG("save frame=%d len=%u crc=%u",
         ev->data.save.frame,
