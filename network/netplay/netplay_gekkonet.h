@@ -4,7 +4,13 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#if __has_include("gekkonet.h")
 #include "gekkonet.h"
+#else
+/* Fallback for build systems that don't add deps/gekkonet/include
+ * to the include path (e.g., some MSVC project files). */
+#include "../../deps/gekkonet/include/gekkonet.h"
+#endif
 #include "../../input/input_defines.h"
 
 /* Simple per-player input layout used for GekkoNet blobs. */
