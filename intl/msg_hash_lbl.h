@@ -2503,6 +2503,34 @@ MSG_HASH(
    "netplay_share_digital"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_GEKKONET_INPUT_PREDICTION,
+   "gekkonet_input_prediction"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_GEKKONET_SPECTATOR_DELAY,
+   "gekkonet_spectator_delay"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_GEKKONET_MAX_SPECTATORS,
+   "gekkonet_max_spectators"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_GEKKONET_LOCAL_DELAY,
+   "gekkonet_local_delay"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_GEKKONET_DESYNC_DETECTION,
+   "gekkonet_desync_detection"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_GEKKONET_LIMITED_SAVING,
+   "gekkonet_limited_saving"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_GEKKONET_ALLOW_LATE_JOIN,
+   "gekkonet_allow_late_join"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_NETPLAY_INPUT_LATENCY_FRAMES_MIN,
    "netplay_input_latency_frames_min"
    )
@@ -2517,6 +2545,10 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_LABEL_NETPLAY_ENABLE,
    "netplay_enable"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_NETPLAY_BACKEND,
+   "netplay_backend"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_NETPLAY_ENABLE_CLIENT,
@@ -2601,6 +2633,10 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_LABEL_NETPLAY_TCP_UDP_PORT,
    "netplay_tcp_udp_port"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_NETPLAY_UDP_PORT,
+   "netplay_udp_port"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_NETPLAY_MAX_CONNECTIONS,
