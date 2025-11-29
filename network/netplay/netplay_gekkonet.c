@@ -663,7 +663,7 @@ static void ra_gekkonet_handle_save(ra_gekkonet_ctx_t    *ctx,
         ev->data.save.state_len ? *ev->data.save.state_len : 0);
 
     if (!ctx->save_cb(ev->data.save.state,
-                      ctx->state_size,
+                      *ev->data.save.state_len,
                       ev->data.save.state_len,
                       ev->data.save.checksum))
     {
@@ -827,6 +827,7 @@ void ra_gekkonet_update(ra_gekkonet_ctx_t *ctx)
     if (!ctx || !ctx->session || !ctx->active)
         return;
 
+    GEKKONET_LOG("update start");
     /* Let GekkoNet process incoming/outgoing packets. */
     gekko_network_poll(ctx->session);
 
@@ -835,4 +836,5 @@ void ra_gekkonet_update(ra_gekkonet_ctx_t *ctx)
 
     /* Deliver game events (save/load/advance). */
     ra_gekkonet_process_game_events(ctx);
+    GEKKONET_LOG("update end");
 }

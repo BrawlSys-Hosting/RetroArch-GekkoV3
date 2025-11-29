@@ -356,6 +356,8 @@ static bool netplay_gekkonet_frame(net_driver_state_t *net_st)
    if (!netplay_backend_is_gekkonet(net_st))
       return false;
 
+   RARCH_LOG("[GekkoNet] frame start\n");
+
    netplay_gekkonet_pack_inputs(net_st, &net_st->gekkonet_input);
 
    if (net_st->gekkonet_local_actor >= 0)
@@ -363,6 +365,7 @@ static bool netplay_gekkonet_frame(net_driver_state_t *net_st)
             net_st->gekkonet_local_actor, &net_st->gekkonet_input);
 
    ra_gekkonet_update(&net_st->gekkonet);
+   RARCH_LOG("[GekkoNet] frame end\n");
    return true;
 }
 
