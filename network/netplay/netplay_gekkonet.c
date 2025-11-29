@@ -655,6 +655,13 @@ static void ra_gekkonet_handle_save(ra_gekkonet_ctx_t    *ctx,
     if (!ev->data.save.state || !ev->data.save.state_len)
         return;
 
+    /* Clamp reported size to our known buffer size to avoid overruns. */
+    if (*ev->data.save.state_len > ctx->state_size)
+        *ev->data.save.state_len = ctx->state_size;
+
+    GEKKONET_LOG("save begin frame=%d requested_len=%u", ev->data.save.frame,
+        ev->data.save.state_len ? *ev->data.save.state_len : 0);
+
     if (!ctx->save_cb(ev->data.save.state,
                       ctx->state_size,
                       ev->data.save.state_len,
@@ -720,6 +727,9 @@ static void ra_gekkonet_handle_advance(ra_gekkonet_ctx_t    *ctx,
     }
 
     ctx->current_input = ctx->current_input_buf;
+
+    GEKKONET_LOG("advance frame=%d len=%u rollback=%d",
+        ev->data.adv.frame, ev->data.adv.input_len, ev->data.adv.rolling_back);
 
     if (ctx->run_frame_cb)
         ctx->run_frame_cb();
@@ -787,6 +797,8 @@ static void ra_gekkonet_process_session_events(ra_gekkonet_ctx_t *ctx)
         const GekkoSessionEvent *ev = events[i];
         if (!ev)
             continue;
+
+        GEKKONET_LOG("session event type=%d", ev->type);
 
         /* Application-specific handling is up to RetroArch. We just forward
          * the event to the optional callback if present.
