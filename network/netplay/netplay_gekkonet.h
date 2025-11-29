@@ -89,6 +89,7 @@ typedef struct ra_gekkonet_ctx
    int          local_actor_count;
    int          remote_actor_count;
 
+   bool ready_for_state;
    bool owns_adapter;
    bool active;
 } ra_gekkonet_ctx_t;

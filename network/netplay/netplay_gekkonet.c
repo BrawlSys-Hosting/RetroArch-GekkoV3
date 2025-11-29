@@ -451,22 +451,23 @@ bool ra_gekkonet_init(ra_gekkonet_ctx_t              *ctx,
     ctx->cfg.post_sync_joining       = params->post_sync_joining;
     ctx->cfg.desync_detection        = params->desync_detection;
 
-    ctx->current_input_buf = calloc(1, params->input_size);
-    if (!ctx->current_input_buf)
-    {
-        GEKKONET_ERR("allocating input buffer (%u bytes) failed",
-                     params->input_size);
-        gekko_destroy(ctx->session);
-        ctx->session = NULL;
-        return false;
-    }
+   ctx->current_input_buf = calloc(1, params->input_size);
+   if (!ctx->current_input_buf)
+   {
+       GEKKONET_ERR("allocating input buffer (%u bytes) failed",
+                    params->input_size);
+       gekko_destroy(ctx->session);
+       ctx->session = NULL;
+       return false;
+   }
    ctx->current_input = ctx->current_input_buf;
+   ctx->ready_for_state = false;
 
    /* Use a simple UDP adapter bound to the requested port. */
-    ctx->adapter = (GekkoNetAdapter*)ra_gekkonet_udp_adapter_create(params->port);
-    if (!ctx->adapter)
-    {
-        GEKKONET_ERR("gekkonet udp adapter (%hu) failed", params->port);
+   ctx->adapter = (GekkoNetAdapter*)ra_gekkonet_udp_adapter_create(params->port);
+   if (!ctx->adapter)
+   {
+       GEKKONET_ERR("gekkonet udp adapter (%hu) failed", params->port);
         gekko_destroy(ctx->session);
         ctx->session = NULL;
         return false;
@@ -651,6 +652,16 @@ static void ra_gekkonet_handle_save(ra_gekkonet_ctx_t    *ctx,
     if (!ctx || !ev || !ctx->save_cb)
         return;
 
+    if (!ctx->ready_for_state)
+    {
+        GEKKONET_WARN("save_state skipped (not ready; frame=%d)", ev->data.save.frame);
+        if (ev->data.save.state_len)
+            *ev->data.save.state_len = 0;
+        if (ev->data.save.checksum)
+            *ev->data.save.checksum = 0;
+        return;
+    }
+
     if (!ev->data.save.state || !ev->data.save.state_len)
         return;
 
@@ -674,6 +685,12 @@ static void ra_gekkonet_handle_load(ra_gekkonet_ctx_t    *ctx,
 {
     if (!ctx || !ev || !ctx->load_cb)
         return;
+
+    if (!ctx->ready_for_state)
+    {
+        GEKKONET_WARN("load_state skipped (not ready; frame=%d)", ev->data.load.frame);
+        return;
+    }
 
     if (!ev->data.load.state || ev->data.load.state_len == 0)
         return;
@@ -714,6 +731,9 @@ static void ra_gekkonet_handle_advance(ra_gekkonet_ctx_t    *ctx,
 
     if (ctx->run_frame_cb)
         ctx->run_frame_cb();
+
+    /* After the first successful advance/run, we can safely serialize. */
+    ctx->ready_for_state = true;
 }
 
 static void ra_gekkonet_process_game_events(ra_gekkonet_ctx_t *ctx)
