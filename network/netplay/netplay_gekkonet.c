@@ -34,6 +34,7 @@
 #include <errno.h>
 #include <stdio.h>
 
+#include "../../encodings/crc32.h"
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
