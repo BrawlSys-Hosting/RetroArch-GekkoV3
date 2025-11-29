@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <sys/types.h>
+#include <limits.h>
 
 #ifdef HAVE_CONFIG_H
 #include "../../config.h"
@@ -370,6 +371,8 @@ static bool netplay_gekkonet_init_session(net_driver_state_t *net_st,
 {
    ra_gekkonet_params_t params;
    settings_t *settings = config_get_ptr();
+   unsigned max_players = settings ? settings->uints.netplay_max_connections : MAX_USERS;
+   unsigned max_specs   = settings ? settings->uints.gekkonet_max_spectators : 0;
    size_t state_sz      = core_serialize_size();
 
    if (!state_sz)
@@ -381,8 +384,21 @@ static bool netplay_gekkonet_init_session(net_driver_state_t *net_st,
       return false;
 
    memset(&params, 0, sizeof(params));
-   params.num_players             = settings ? settings->uints.input_max_users : MAX_USERS;
-   params.max_spectators          = settings ? settings->uints.gekkonet_max_spectators : 0;
+   if (!max_players)
+      max_players = 1;
+   if (max_players > MAX_USERS)
+      max_players = MAX_USERS;
+   if (max_specs > UINT8_MAX)
+      max_specs = UINT8_MAX;
+   if (settings && settings->uints.gekkonet_input_prediction > UINT8_MAX)
+      settings->uints.gekkonet_input_prediction = UINT8_MAX;
+   if (settings && settings->uints.gekkonet_spectator_delay > UINT8_MAX)
+      settings->uints.gekkonet_spectator_delay = UINT8_MAX;
+   if (settings && settings->uints.gekkonet_local_delay > UINT8_MAX)
+      settings->uints.gekkonet_local_delay = UINT8_MAX;
+
+   params.num_players             = (unsigned char)max_players;
+   params.max_spectators          = (unsigned char)max_specs;
    params.input_prediction_window = settings ? settings->uints.gekkonet_input_prediction : 0;
    params.spectator_delay         = settings ? settings->uints.gekkonet_spectator_delay : 0;
    params.input_size              = sizeof(ra_gekkonet_input_t);
@@ -402,6 +418,8 @@ static bool netplay_gekkonet_init_session(net_driver_state_t *net_st,
             netplay_gekkonet_save_state_cb,
             netplay_gekkonet_load_state_cb))
    {
+      RARCH_ERR("[GekkoNet] Initialization failed (players=%u, specs=%u, state=%u bytes).\n",
+            params.num_players, params.max_spectators, params.state_size);
       netplay_gekkonet_reset(net_st);
       core_unset_netplay_callbacks();
       return false;
