@@ -4,6 +4,14 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#ifndef GEKKONET_STATIC
+#define GEKKONET_STATIC 1
+#endif
+
 #if __has_include("gekkonet.h")
 #include "gekkonet.h"
 #else
@@ -113,5 +121,9 @@ bool ra_gekkonet_push_local_input(ra_gekkonet_ctx_t *ctx,
                                   const void        *input_blob);
 
 void ra_gekkonet_update(ra_gekkonet_ctx_t *ctx);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* RARCH_NETPLAY_GEKKONET_H */

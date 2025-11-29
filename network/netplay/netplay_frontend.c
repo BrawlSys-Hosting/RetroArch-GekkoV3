@@ -251,7 +251,19 @@ static bool netplay_gekkonet_save_state_cb(void *dst,
       *out_size = (unsigned int)serial_info.size;
 
    if (out_crc)
-      *out_crc = encoding_crc32_calculate(dst, serial_info.size);
+   {
+      unsigned int crc = 0xFFFFFFFFu;
+      const unsigned char *p = (const unsigned char*)dst;
+      size_t i, j;
+
+      for (i = 0; i < serial_info.size; i++)
+      {
+         crc ^= p[i];
+         for (j = 0; j < 8; j++)
+            crc = (crc >> 1) ^ (0xEDB88320u & (-(int)(crc & 1)));
+      }
+      *out_crc = crc ^ 0xFFFFFFFFu;
+   }
 
    return true;
 }
