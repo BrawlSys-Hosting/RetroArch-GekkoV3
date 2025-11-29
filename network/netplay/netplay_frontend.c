@@ -49,6 +49,7 @@
 #include "../../command.h"
 #include "../../content.h"
 #include "../../core.h"
+#include "../../encodings/crc32.h"
 #include "../../driver.h"
 #include "../../file_path_special.h"
 #include "../../paths.h"
