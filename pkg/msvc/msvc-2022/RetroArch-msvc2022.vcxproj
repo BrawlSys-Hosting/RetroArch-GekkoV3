@@ -1000,6 +1000,12 @@
       <AdditionalLibraryDirectories>$(CG_LIB64_PATH)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
+  <!-- Avoid invalid /arch switches on ARM/ARM64 builds -->
+  <ItemDefinitionGroup Condition="'$(Platform)'=='ARM' Or '$(Platform)'=='ARM64'">
+    <ClCompile>
+      <EnableEnhancedInstructionSet>NotSet</EnableEnhancedInstructionSet>
+    </ClCompile>
+  </ItemDefinitionGroup>
   <ItemGroup>
     <ResourceCompile Include="..\..\..\media\rarch.rc" />
   </ItemGroup>
