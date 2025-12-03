@@ -1,5 +1,5 @@
 TARGET		    := retroarch.exe
-DEBUG           = 1
+DEBUG           = 0
 GRIFFIN_BUILD   = 0
 OS              = Win32
 ARCH            = amd64

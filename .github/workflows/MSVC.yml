@@ -56,3 +56,34 @@ jobs:
             ${{ matrix.version == 'UWP' }}:
               pkg/msvc-uwp/AppPackages/RetroArch-msvcUWP
 
+  # Separate Windows on ARM64 build (kept apart from x86/x64 matrix above)
+  msvc-arm64:
+    runs-on: windows-2022
+    strategy:
+      matrix:
+        version: [2022]
+        configuration: [Debug, Release]
+        platform: [ARM64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v1
+
+      - name: Compile RA (ARM64)
+        working-directory: "${{github.workspace}}/pkg/msvc"
+        run: |
+          msbuild -p:"Configuration=${{matrix.configuration}}" -p:"Platform=${{matrix.platform}}" -p:DebugType=full -p:DebugSymbols=true .\RetroArch-msvc${{matrix.version}}.sln
+
+      - name: Get short SHA
+        id: slug
+        shell: powershell
+        run: echo "sha8=$('${{github.sha}}'.Substring(0,8))"  >> $env:GITHUB_OUTPUT
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: retroarch-${{matrix.version}}-${{matrix.configuration}}-${{matrix.platform}}-${{ steps.slug.outputs.sha8 }}
+          path: |
+            pkg/msvc/msvc-${{matrix.version}}/${{matrix.platform}}/${{matrix.configuration}}/RetroArch-msvc${{matrix.version}}.exe
+            pkg/msvc/${{matrix.platform}}/${{matrix.configuration}}/RetroArch-msvc${{matrix.version}}.exe
+

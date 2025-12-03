@@ -8043,9 +8043,13 @@ void core_run(void)
       : (enum poll_type)(current_core->poll_type);
    bool early_polling          = new_poll_type == POLL_TYPE_EARLY;
    bool late_polling           = new_poll_type == POLL_TYPE_LATE;
+   bool skip_retro_run         = false;
 #ifdef HAVE_NETWORKING
-   bool netplay_preframe       = netplay_driver_ctl(
-         RARCH_NETPLAY_CTL_PRE_FRAME, NULL);
+   net_driver_state_t *net_st  = networking_state_get_ptr();
+   bool in_gekkonet_frame      = net_st && net_st->gekkonet_running_frame;
+   bool using_gekkonet         = net_st && net_st->backend == NETPLAY_BACKEND_GEKKONET && net_st->gekkonet_active;
+   bool netplay_preframe       = in_gekkonet_frame ? true :
+         netplay_driver_ctl(RARCH_NETPLAY_CTL_PRE_FRAME, NULL);
 
    if (!netplay_preframe)
    {
@@ -8055,6 +8059,13 @@ void core_run(void)
       video_driver_cached_frame();
       return;
    }
+
+   /* If the GekkoNet backend already drove core_run() for this frame,
+    * skip running the core a second time to avoid double stepping. */
+   if (!using_gekkonet &&
+         !in_gekkonet_frame &&
+         netplay_driver_ctl(RARCH_NETPLAY_CTL_GEKKONET_FRAME_CONSUMED, NULL))
+      skip_retro_run = true;
 #endif
 
    if (early_polling)
@@ -8062,7 +8073,16 @@ void core_run(void)
    else if (late_polling)
       current_core->flags &= ~RETRO_CORE_FLAG_INPUT_POLLED;
 
-   current_core->retro_run();
+   if (using_gekkonet && net_st->gekkonet_needs_run)
+   {
+      net_st->gekkonet_needs_run = false;
+      current_core->retro_run();
+      net_st->gekkonet_has_frame = true;
+   }
+   else if (!skip_retro_run)
+      current_core->retro_run();
+   else
+      video_driver_cached_frame();
 
 #ifdef HAVE_GAME_AI
    {

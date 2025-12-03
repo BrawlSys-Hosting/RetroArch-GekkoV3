@@ -77,7 +77,9 @@ enum rarch_netplay_ctl_state
    RARCH_NETPLAY_CTL_BAN_CLIENT,
    RARCH_NETPLAY_CTL_SET_CORE_PACKET_INTERFACE,
    RARCH_NETPLAY_CTL_USE_CORE_PACKET_INTERFACE,
-   RARCH_NETPLAY_CTL_ALLOW_TIMESKIP
+   RARCH_NETPLAY_CTL_ALLOW_TIMESKIP,
+   /* GekkoNet: backend already ran the core this frame */
+   RARCH_NETPLAY_CTL_GEKKONET_FRAME_CONSUMED
 };
 
 /* The current status of a connection */

@@ -164,6 +164,10 @@ typedef struct
    ra_gekkonet_input_t  gekkonet_input;
    retro_callbacks_t    gekkonet_cbs;
    int                  gekkonet_local_actor;
+   bool                 gekkonet_frame_consumed;
+   bool                 gekkonet_running_frame;
+   bool                 gekkonet_has_frame;
+   bool                 gekkonet_needs_run;
    bool                 gekkonet_active;
    netplay_backend_t    backend;
    netplay_client_info_t *client_info;

@@ -70,6 +70,7 @@ typedef struct ra_gekkonet_ctx
    GekkoSession    *session;
    GekkoNetAdapter *adapter;
    GekkoConfig      cfg;
+   unsigned short   bound_port;
 
    ra_gekkonet_save_state_cb      save_cb;
    ra_gekkonet_load_state_cb      load_cb;
@@ -92,6 +93,7 @@ typedef struct ra_gekkonet_ctx
    bool ready_for_state;
    bool owns_adapter;
    bool active;
+   bool advanced_frame;
 } ra_gekkonet_ctx_t;
 
 const void *ra_gekkonet_get_current_input(const ra_gekkonet_ctx_t *ctx);
@@ -123,6 +125,9 @@ bool ra_gekkonet_push_local_input(ra_gekkonet_ctx_t *ctx,
                                   const void        *input_blob);
 
 void ra_gekkonet_update(ra_gekkonet_ctx_t *ctx);
+
+/* Fire a one-shot UDP probe to a given "ip:port" string using the current adapter. */
+void ra_gekkonet_send_probe(const char *addr_string);
 
 #ifdef __cplusplus
 }

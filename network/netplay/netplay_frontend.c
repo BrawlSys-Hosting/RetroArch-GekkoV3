@@ -52,6 +52,8 @@
 #include "../../core.h"
 #include "../../encodings/crc32.h"
 #include "../../driver.h"
+#include "../../audio/audio_driver.h"
+#include "../../gfx/video_driver.h"
 #include "../../file_path_special.h"
 #include "../../paths.h"
 #include "../../retroarch.h"
@@ -233,8 +235,11 @@ static void netplay_gekkonet_reset(net_driver_state_t *net_st)
 
    memset(&net_st->gekkonet, 0, sizeof(net_st->gekkonet));
    memset(&net_st->gekkonet_input, 0, sizeof(net_st->gekkonet_input));
-   memset(&net_st->gekkonet_cbs, 0, sizeof(net_st->gekkonet_cbs));
    net_st->gekkonet_local_actor = -1;
+   net_st->gekkonet_frame_consumed = false;
+   net_st->gekkonet_running_frame  = false;
+   net_st->gekkonet_has_frame      = false;
+   net_st->gekkonet_needs_run      = false;
    net_st->gekkonet_active      = false;
 }
 
@@ -280,7 +285,10 @@ static bool netplay_gekkonet_load_state_cb(const void *src,
 
 static void netplay_gekkonet_run_frame_cb(void)
 {
-   core_run();
+   net_driver_state_t *net_st = networking_state_get_ptr();
+   (void)net_st;
+   if (net_st && netplay_backend_is_gekkonet(net_st))
+      net_st->gekkonet_needs_run = true;
 }
 
 static void netplay_gekkonet_session_event_cb(
@@ -353,11 +361,22 @@ static void netplay_gekkonet_pack_inputs(net_driver_state_t *net_st,
 
 static bool netplay_gekkonet_frame(net_driver_state_t *net_st)
 {
+   static bool logged_frame_entry = false;
    if (!netplay_backend_is_gekkonet(net_st))
       return false;
 
-   RARCH_LOG("[GekkoNet] frame start\n");
+   if (net_st->gekkonet_running_frame)
+      return true;
 
+   net_st->gekkonet_running_frame = true;
+   net_st->gekkonet_frame_consumed = false;
+   net_st->gekkonet_has_frame      = false;
+   net_st->gekkonet_needs_run      = false;
+   if (!logged_frame_entry)
+   {
+      RARCH_LOG("[GekkoNet] netplay_gekkonet_frame first entry\n");
+      logged_frame_entry = true;
+   }
    netplay_gekkonet_pack_inputs(net_st, &net_st->gekkonet_input);
 
    if (net_st->gekkonet_local_actor >= 0)
@@ -365,7 +384,10 @@ static bool netplay_gekkonet_frame(net_driver_state_t *net_st)
             net_st->gekkonet_local_actor, &net_st->gekkonet_input);
 
    ra_gekkonet_update(&net_st->gekkonet);
-   RARCH_LOG("[GekkoNet] frame end\n");
+   /* Align with builtin netplay timing: let the main runloop decide if it should skip. */
+   net_st->gekkonet_has_frame      = net_st->gekkonet.advanced_frame;
+   net_st->gekkonet_frame_consumed = net_st->gekkonet_has_frame;
+   net_st->gekkonet_running_frame  = false;
    return true;
 }
 
@@ -374,13 +396,18 @@ static bool netplay_gekkonet_init_session(net_driver_state_t *net_st,
 {
    ra_gekkonet_params_t params;
    settings_t *settings = config_get_ptr();
-   /* Only count actors we actually add: always 1 local, +1 if connecting to a remote host. */
-   unsigned max_players = 1 + ((server && *server) ? 1 : 0);
+   /* Default to a 2-player session (host + one remote). */
+   unsigned max_players = 2;
    unsigned max_specs   = settings ? settings->uints.gekkonet_max_spectators : 0;
    size_t state_sz      = core_serialize_size();
 
    if (!state_sz)
-      return false;
+   {
+      /* Deferred join/host before core is ready: fall back to 1 MiB so we don't abort init. */
+      state_sz = 1024 * 1024;
+      RARCH_WARN("[GekkoNet] core_serialize_size returned 0; using fallback state size=%zu bytes\n",
+            state_sz);
+   }
 
    if (!core_set_default_callbacks(&net_st->gekkonet_cbs))
       return false;
@@ -388,8 +415,7 @@ static bool netplay_gekkonet_init_session(net_driver_state_t *net_st,
       return false;
 
    memset(&params, 0, sizeof(params));
-   if (!max_players)
-      max_players = 1;
+   max_players = 2;
    if (max_players > MAX_USERS)
       max_players = MAX_USERS;
    if (max_specs > UINT8_MAX)
@@ -409,7 +435,7 @@ static bool netplay_gekkonet_init_session(net_driver_state_t *net_st,
    params.state_size              = (unsigned int)state_sz;
    params.port                    = (unsigned short)(port ? port :
          (settings ? settings->uints.netplay_udp_port : RARCH_DEFAULT_PORT));
-   params.limited_saving          = settings ? settings->bools.gekkonet_limited_saving : false;
+   params.limited_saving          = true; /* reduce per-frame save overhead */
    params.post_sync_joining       = settings ? settings->bools.gekkonet_allow_late_join : false;
    params.desync_detection        = settings ? settings->bools.gekkonet_desync_detection : false;
 
@@ -447,7 +473,9 @@ static bool netplay_gekkonet_init_session(net_driver_state_t *net_st,
       char addr[96];
       snprintf(addr, sizeof(addr), "%s:%hu", server,
             params.port);
-      if (ra_gekkonet_add_actor(&net_st->gekkonet, RemotePlayer, addr) < 0)
+      int remote = ra_gekkonet_add_actor(&net_st->gekkonet, RemotePlayer, addr);
+      RARCH_LOG("[GekkoNet] add remote actor %s handle=%d\n", addr, remote);
+      if (remote < 0)
          RARCH_WARN("[GekkoNet] Failed to add remote actor for %s\n", addr);
    }
 
@@ -458,6 +486,12 @@ static bool netplay_gekkonet_init_session(net_driver_state_t *net_st,
 
    net_st->gekkonet_active = true;
    net_st->backend         = NETPLAY_BACKEND_GEKKONET;
+   RARCH_LOG("[GekkoNet] session init complete (players=%u, bound_port=%hu)\n",
+         (unsigned)params.num_players, net_st->gekkonet.bound_port);
+   if (net_st->flags & NET_DRIVER_ST_FLAG_NETPLAY_IS_CLIENT)
+      RARCH_LOG("[GekkoNet] acting as client\n");
+   else
+      RARCH_LOG("[GekkoNet] acting as host\n");
    return true;
 }
 
@@ -8709,6 +8743,15 @@ bool init_netplay_deferred(const char *server, unsigned port, const char *mitm_s
  */
 void input_poll_net(netplay_t *netplay)
 {
+   net_driver_state_t *net_st = &networking_driver_st;
+
+   /* GekkoNet drives its own frame/input loop. */
+   if (netplay_backend_is_gekkonet(net_st))
+      return;
+
+   if (!netplay)
+      return;
+
    if (!netplay_should_skip(netplay))
    {
       input_driver_state_t *input_st = input_state_get_ptr();
@@ -8723,6 +8766,15 @@ void video_frame_net(const void *data, unsigned width,
 {
    net_driver_state_t *net_st  = &networking_driver_st;
    netplay_t          *netplay = net_st->data;
+   if (netplay_backend_is_gekkonet(net_st))
+   {
+      /* Use the standard video path to mirror builtin netplay behavior. */
+      video_driver_frame(data, width, height, pitch);
+      return;
+   }
+   if (!netplay)
+      return;
+
    if (!netplay_should_skip(netplay))
       netplay->cbs.frame_cb(data, width, height, pitch);
 }
@@ -8731,6 +8783,14 @@ void audio_sample_net(int16_t left, int16_t right)
 {
    net_driver_state_t *net_st  = &networking_driver_st;
    netplay_t          *netplay = net_st->data;
+   if (netplay_backend_is_gekkonet(net_st))
+   {
+      audio_driver_sample(left, right);
+      return;
+   }
+   if (!netplay)
+      return;
+
    if (!netplay_should_skip(netplay) && !netplay->stall)
       netplay->cbs.sample_cb(left, right);
 }
@@ -8739,6 +8799,13 @@ size_t audio_sample_batch_net(const int16_t *data, size_t frames)
 {
    net_driver_state_t *net_st  = &networking_driver_st;
    netplay_t          *netplay = net_st->data;
+   if (netplay_backend_is_gekkonet(net_st))
+   {
+      return audio_driver_sample_batch(data, frames);
+   }
+   if (!netplay)
+      return frames;
+
    if (!netplay_should_skip(netplay) && !netplay->stall)
       return netplay->cbs.sample_batch_cb(data, frames);
    return frames;
@@ -9366,15 +9433,39 @@ void deinit_netplay(void)
 bool init_netplay_gekkonet(const char *server, unsigned port, const char *mitm_session)
 {
    net_driver_state_t *net_st = &networking_driver_st;
+   settings_t *settings       = config_get_ptr();
    (void)mitm_session;
 
-   if (!(net_st->flags & NET_DRIVER_ST_FLAG_NETPLAY_ENABLED))
-      return false;
+   /* Resolve server from settings if not provided. */
+   if (!server || !*server)
+      server = settings ? settings->paths.netplay_server : NULL;
 
-   net_st->backend = NETPLAY_BACKEND_GEKKONET;
+   /* Decide role before overriding flags: if caller intended client or provided a server, require server. */
+   {
+      bool want_client = (net_st->flags & NET_DRIVER_ST_FLAG_NETPLAY_IS_CLIENT) || (server && *server);
+      net_st->backend = NETPLAY_BACKEND_GEKKONET;
+
+      if (want_client)
+      {
+         if (!server || !*server)
+         {
+            RARCH_ERR("[GekkoNet] No server provided for client join; aborting init.\n");
+            return false;
+         }
+         net_st->flags |= NET_DRIVER_ST_FLAG_NETPLAY_ENABLED | NET_DRIVER_ST_FLAG_NETPLAY_IS_CLIENT;
+      }
+      else
+      {
+         net_st->flags |= NET_DRIVER_ST_FLAG_NETPLAY_ENABLED;
+         net_st->flags &= ~NET_DRIVER_ST_FLAG_NETPLAY_IS_CLIENT;
+      }
+   }
 
    if (netplay_backend_is_gekkonet(net_st))
       netplay_gekkonet_deinit_session(net_st);
+
+   RARCH_LOG("[GekkoNet] init_netplay_gekkonet server=%s port=%u\n",
+         server ? server : "(null)", port);
 
    if (!netplay_gekkonet_init_session(net_st, server, port))
    {
@@ -9382,6 +9473,13 @@ bool init_netplay_gekkonet(const char *server, unsigned port, const char *mitm_s
                     | NET_DRIVER_ST_FLAG_NETPLAY_IS_CLIENT);
       return false;
    }
+
+   /* Reinstate flags after successful init in case they were cleared elsewhere. */
+   net_st->flags |= NET_DRIVER_ST_FLAG_NETPLAY_ENABLED;
+   if (server && *server)
+      net_st->flags |= NET_DRIVER_ST_FLAG_NETPLAY_IS_CLIENT;
+   else
+      net_st->flags &= ~NET_DRIVER_ST_FLAG_NETPLAY_IS_CLIENT;
 
    return true;
 }
@@ -9778,7 +9876,7 @@ bool netplay_driver_ctl(enum rarch_netplay_ctl_state state, void *data)
    switch (state)
    {
       case RARCH_NETPLAY_CTL_ENABLE_SERVER:
-         if (netplay || using_gekkonet)
+         if (netplay)
          {
             ret = false;
             break;
@@ -9788,7 +9886,7 @@ bool netplay_driver_ctl(enum rarch_netplay_ctl_state state, void *data)
          break;
 
       case RARCH_NETPLAY_CTL_ENABLE_CLIENT:
-         if (netplay || using_gekkonet)
+         if (netplay)
          {
             ret               = false;
             break;
@@ -9938,6 +10036,18 @@ bool netplay_driver_ctl(enum rarch_netplay_ctl_state state, void *data)
             ret = netplay_gekkonet_frame(net_st);
          else if (netplay)
             ret = netplay_pre_frame(netplay);
+         break;
+
+      case RARCH_NETPLAY_CTL_GEKKONET_FRAME_CONSUMED:
+         if (using_gekkonet && net_st->gekkonet_frame_consumed)
+         {
+            net_st->gekkonet_frame_consumed = false;
+            ret = true;
+         }
+         else
+         {
+            ret = false;
+         }
          break;
 
       case RARCH_NETPLAY_CTL_GAME_WATCH:

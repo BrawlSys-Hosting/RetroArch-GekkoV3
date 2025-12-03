@@ -64,8 +64,11 @@ typedef struct ra_gekkonet_udp_adapter
 {
     GekkoNetAdapter api;
     int             sockfd;
+    unsigned short  port;
     struct ra_gekkonet_ctx *owner;
 } ra_gekkonet_udp_adapter_t;
+
+static void ra_gekkonet_udp_adapter_destroy(ra_gekkonet_udp_adapter_t *adapter);
 
 static ra_gekkonet_udp_adapter_t *g_udp_adapter        = NULL;
 static GekkoNetResult           **g_udp_results        = NULL;
@@ -118,6 +121,8 @@ static void ra_gekkonet_udp_send(GekkoNetAddress *addr,
                                  const char      *data,
                                  int              length);
 static GekkoNetResult **ra_gekkonet_udp_receive(int *length);
+
+static void ra_gekkonet_send_probe_str(const char *addr_string);
 
 #ifdef _WIN32
 static bool ra_gekkonet_wsa_init(void)
@@ -207,11 +212,34 @@ static ra_gekkonet_udp_adapter_t *ra_gekkonet_udp_adapter_create(unsigned short 
     addr.sin_addr.s_addr = htonl(INADDR_ANY);
     addr.sin_port        = htons(port);
 
-    if (bind(adapter->sockfd, (struct sockaddr*)&addr, sizeof(addr)) < 0)
+   if (bind(adapter->sockfd, (struct sockaddr*)&addr, sizeof(addr)) < 0)
+   {
+        /* If a specific port was requested, fail rather than silently changing it. */
+        if (port != 0)
+        {
+            GEKKONET_ERR("UDP bind failed on port %hu", port);
+            ra_gekkonet_udp_close(adapter->sockfd);
+            free(adapter);
+            return NULL;
+        }
+        /* Port zero means ephemeral is fine; retry with 0. */
+        addr.sin_port = htons(0);
+        if (bind(adapter->sockfd, (struct sockaddr*)&addr, sizeof(addr)) < 0)
+        {
+            ra_gekkonet_udp_close(adapter->sockfd);
+            free(adapter);
+            return NULL;
+        }
+    }
+
+    /* Record the actual bound port for logging. */
     {
-        ra_gekkonet_udp_close(adapter->sockfd);
-        free(adapter);
-        return NULL;
+        struct sockaddr_in bound;
+        socklen_t blen = sizeof(bound);
+        if (getsockname(adapter->sockfd, (struct sockaddr*)&bound, &blen) == 0)
+            adapter->port = ntohs(bound.sin_port);
+        else
+            adapter->port = port;
     }
 
     adapter->api.send_data    = ra_gekkonet_udp_send;
@@ -278,28 +306,108 @@ static bool ra_gekkonet_parse_addr(const GekkoNetAddress *addr,
     return true;
 }
 
+static bool ra_gekkonet_normalize_addr(const char *addr_in,
+                                       char       *out,
+                                       size_t      out_sz)
+{
+    const char *colon;
+    char host[128];
+    char portstr[16];
+    struct addrinfo hints, *res = NULL;
+
+    if (!addr_in || !out || out_sz == 0)
+        return false;
+
+    colon = strrchr(addr_in, ':');
+    if (!colon || colon == addr_in)
+        return false;
+
+    {
+        size_t host_len = (size_t)(colon - addr_in);
+        if (host_len >= sizeof(host))
+            host_len = sizeof(host) - 1;
+        memcpy(host, addr_in, host_len);
+        host[host_len] = '\0';
+    }
+    snprintf(portstr, sizeof(portstr), "%s", colon + 1);
+
+    /* If host is already numeric, keep it. */
+    {
+        struct in_addr tmp;
+        if (inet_pton(AF_INET, host, &tmp) == 1)
+        {
+            snprintf(out, out_sz, "%s:%s", host, portstr);
+            return true;
+        }
+    }
+
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family   = AF_INET;
+    hints.ai_socktype = SOCK_DGRAM;
+
+    if (getaddrinfo(host, portstr, &hints, &res) != 0 || !res)
+        return false;
+
+    {
+        char ipbuf[64];
+        bool ok = false;
+        if (res->ai_addr &&
+            inet_ntop(AF_INET, &((struct sockaddr_in*)res->ai_addr)->sin_addr,
+                      ipbuf, sizeof(ipbuf)))
+        {
+            snprintf(out, out_sz, "%s:%s", ipbuf, portstr);
+            ok = true;
+        }
+        freeaddrinfo(res);
+        return ok;
+    }
+}
+
 static void ra_gekkonet_udp_send(GekkoNetAddress *addr,
                                  const char      *data,
                                  int              length)
 {
     struct sockaddr_in dst;
-    char host[64];
-    unsigned short port = 0;
+   char host[64];
+   unsigned short port = 0;
 
-    if (!g_udp_adapter || !addr || !data || length <= 0)
-        return;
+   if (!g_udp_adapter || !addr || !data || length <= 0)
+       return;
 
-    memset(&dst, 0, sizeof(dst));
-    if (!ra_gekkonet_parse_addr(addr, host, sizeof(host), &port))
-        return;
+   memset(&dst, 0, sizeof(dst));
+   if (!ra_gekkonet_parse_addr(addr, host, sizeof(host), &port))
+       return;
 
-    dst.sin_family = AF_INET;
-    dst.sin_port   = htons(port);
-    if (inet_pton(AF_INET, host, &dst.sin_addr) != 1)
-        return;
+   dst.sin_family = AF_INET;
+   dst.sin_port   = htons(port);
+   if (inet_pton(AF_INET, host, &dst.sin_addr) != 1)
+       return;
 
+   GEKKONET_LOG("UDP send to %s:%hu len=%d", host, port, length);
     sendto(g_udp_adapter->sockfd, data, length, 0,
            (struct sockaddr*)&dst, (socklen_t)sizeof(dst));
+}
+
+/* Fire a small UDP packet to prime NATs and trigger host auto-add. */
+static void ra_gekkonet_send_probe_str(const char *addr_string)
+{
+    GekkoNetAddress addr;
+    const char ping[] = "hi";
+
+    if (!g_udp_adapter || !addr_string || !*addr_string)
+        return;
+
+    memset(&addr, 0, sizeof(addr));
+    addr.data = (void*)addr_string;
+    addr.size = (unsigned int)strlen(addr_string);
+
+    GEKKONET_LOG("Sending UDP probe to %s", addr_string);
+    ra_gekkonet_udp_send(&addr, ping, (int)sizeof(ping));
+}
+
+void ra_gekkonet_send_probe(const char *addr_string)
+{
+    ra_gekkonet_send_probe_str(addr_string);
 }
 
 static GekkoNetResult **ra_gekkonet_udp_receive(int *length)
@@ -391,11 +499,15 @@ static GekkoNetResult **ra_gekkonet_udp_receive(int *length)
                 if (!ra_gekkonet_addr_known(owner, addrbuf) &&
                     owner->remote_actor_count + owner->local_actor_count < (int)owner->cfg.num_players)
                 {
+                    GEKKONET_LOG("Auto-adding remote actor for %s", addrbuf);
                     if (ra_gekkonet_add_actor(owner, RemotePlayer, addrbuf) < 0)
                         GEKKONET_WARN("Failed to auto-add remote actor for %s", addrbuf);
+                    else
+                        GEKKONET_LOG("Auto-add success for %s", addrbuf);
                 }
             }
 
+            GEKKONET_LOG("UDP recv from %s len=%d", addrbuf, recvd);
             g_udp_results[count++] = res;
         }
     }
@@ -420,19 +532,21 @@ bool ra_gekkonet_init(ra_gekkonet_ctx_t              *ctx,
                       ra_gekkonet_save_state_cb       save_cb,
                       ra_gekkonet_load_state_cb       load_cb)
 {
-    if (!ctx || !params)
-        return false;
+   if (!ctx || !params)
+       return false;
 
-    memset(ctx, 0, sizeof(*ctx));
+   memset(ctx, 0, sizeof(*ctx));
 
-   ctx->save_cb      = save_cb;
-   ctx->load_cb      = load_cb;
-   ctx->run_frame_cb = NULL; /* set later */
-   ctx->state_size   = params->state_size;
-   ctx->input_size   = params->input_size;
-   ctx->current_input_buf = NULL;
+  ctx->save_cb      = save_cb;
+  ctx->load_cb      = load_cb;
+  ctx->run_frame_cb = NULL; /* set later */
+  ctx->state_size   = params->state_size;
+  ctx->input_size   = params->input_size;
+  ctx->current_input_buf = NULL;
    ctx->current_input = NULL;
    ctx->owns_adapter = false;
+   ctx->advanced_frame = false;
+   ctx->bound_port      = 0;
 
     if (!gekko_create(&ctx->session))
     {
@@ -447,8 +561,8 @@ bool ra_gekkonet_init(ra_gekkonet_ctx_t              *ctx,
     ctx->cfg.spectator_delay         = params->spectator_delay;
     ctx->cfg.input_size              = params->input_size;
     ctx->cfg.state_size              = params->state_size;
-    ctx->cfg.limited_saving          = params->limited_saving;
-    ctx->cfg.post_sync_joining       = params->post_sync_joining;
+   ctx->cfg.limited_saving          = params->limited_saving;
+   ctx->cfg.post_sync_joining       = params->post_sync_joining;
     ctx->cfg.desync_detection        = params->desync_detection;
 
    ctx->current_input_buf = calloc(1, params->input_size);
@@ -460,9 +574,10 @@ bool ra_gekkonet_init(ra_gekkonet_ctx_t              *ctx,
        ctx->session = NULL;
        return false;
    }
-    ctx->current_input = ctx->current_input_buf;
-    /* Allow saves/loads immediately; some backends request a save before any advance. */
-    ctx->ready_for_state = true;
+   ctx->current_input = ctx->current_input_buf;
+   /* Allow saves/loads immediately; some backends request a save before any advance. */
+   ctx->ready_for_state = true;
+   ctx->bound_port      = 0;
 
    /* Use a simple UDP adapter bound to the requested port. */
    ctx->adapter = (GekkoNetAdapter*)ra_gekkonet_udp_adapter_create(params->port);
@@ -472,17 +587,19 @@ bool ra_gekkonet_init(ra_gekkonet_ctx_t              *ctx,
         gekko_destroy(ctx->session);
         ctx->session = NULL;
         return false;
-    }
-    ctx->owns_adapter = true;
-    ((ra_gekkonet_udp_adapter_t*)ctx->adapter)->owner = ctx;
+   }
+   ctx->owns_adapter = true;
+   ((ra_gekkonet_udp_adapter_t*)ctx->adapter)->owner = ctx;
+   ctx->bound_port = ((ra_gekkonet_udp_adapter_t*)ctx->adapter)->port;
 
-    gekko_net_adapter_set(ctx->session, ctx->adapter);
-    gekko_start(ctx->session, &ctx->cfg);
+   gekko_net_adapter_set(ctx->session, ctx->adapter);
+   gekko_start(ctx->session, &ctx->cfg);
 
-    ctx->active = true;
-    GEKKONET_LOG("GekkoNet session started: %u players, %u spectators",
+   ctx->active = true;
+    GEKKONET_LOG("GekkoNet session started: %u players, %u spectators (port=%hu)",
                  (unsigned)ctx->cfg.num_players,
-                 (unsigned)ctx->cfg.max_spectators);
+                 (unsigned)ctx->cfg.max_spectators,
+                 ctx->bound_port);
     return true;
 }
 
@@ -559,6 +676,8 @@ int ra_gekkonet_add_actor(ra_gekkonet_ctx_t *ctx,
 {
     GekkoNetAddress addr;
     int handle;
+    char normalized[128];
+    const char *addr_to_use = addr_string;
 
     if (!ctx || !ctx->session)
         return -1;
@@ -570,9 +689,12 @@ int ra_gekkonet_add_actor(ra_gekkonet_ctx_t *ctx,
         return -1;
     }
 
+    if (addr_string && ra_gekkonet_normalize_addr(addr_string, normalized, sizeof(normalized)))
+        addr_to_use = normalized;
+
     memset(&addr, 0, sizeof(addr));
 
-    if (addr_string && *addr_string)
+    if (addr_to_use && *addr_to_use)
     {
         /* GekkoNet's default adapter treats addr.data as a pointer to a
          * char buffer containing "ip:port" or similar. To keep this
@@ -580,11 +702,11 @@ int ra_gekkonet_add_actor(ra_gekkonet_ctx_t *ctx,
          * You may want to store these pointers in the context and free
          * them in ra_gekkonet_deinit().
          */
-        size_t len = strlen(addr_string) + 1;
+        size_t len = strlen(addr_to_use) + 1;
         char  *buf = (char*)malloc(len);
         if (!buf)
             return -1;
-        memcpy(buf, addr_string, len);
+        memcpy(buf, addr_to_use, len);
         addr.data = buf;
         addr.size = (unsigned int)len;
     }
@@ -603,7 +725,14 @@ int ra_gekkonet_add_actor(ra_gekkonet_ctx_t *ctx,
         return -1;
     }
 
-    GEKKONET_LOG("Added actor handle %d (type=%d)", handle, (int)type);
+    GEKKONET_LOG("Added actor handle %d (type=%d)%s%s",
+                 handle, (int)type,
+                 addr_to_use ? " addr=" : "",
+                 addr_to_use ? addr_to_use : "");
+
+    /* If this is an explicit remote actor with a known address, send a probe now. */
+    if (type == RemotePlayer && addr_to_use && *addr_to_use)
+        ra_gekkonet_send_probe_str(addr_to_use);
     /* NOTE: If addr_string was duplicated, you should keep it alive for
      * as long as the actor exists. For brevity, this skeleton doesn't
      * track them; consider extending ra_gekkonet_ctx_t to do so.
@@ -653,12 +782,23 @@ static void ra_gekkonet_handle_save(ra_gekkonet_ctx_t    *ctx,
     if (!ctx || !ev || !ctx->save_cb)
         return;
 
-    /* Temporarily disable saving to isolate crash source. */
-    GEKKONET_WARN("save_state skipped (temporarily disabled, frame=%d)", ev->data.save.frame);
-    if (ev->data.save.state_len)
-        *ev->data.save.state_len = 0;
-    if (ev->data.save.checksum)
-        *ev->data.save.checksum = 0;
+    if (!ev->data.save.state || !ev->data.save.state_len)
+        return;
+
+    /* Clamp reported size to our known buffer size to avoid overruns. */
+    if (*ev->data.save.state_len > ctx->state_size)
+        *ev->data.save.state_len = ctx->state_size;
+
+    if (!ctx->save_cb(ev->data.save.state,
+                      *ev->data.save.state_len,
+                      ev->data.save.state_len,
+                      ev->data.save.checksum))
+    {
+        GEKKONET_WARN("save_state callback failed (frame=%d)", ev->data.save.frame);
+        return;
+    }
+
+    ctx->ready_for_state = true;
 }
 
 static void ra_gekkonet_handle_load(ra_gekkonet_ctx_t    *ctx,
@@ -667,15 +807,24 @@ static void ra_gekkonet_handle_load(ra_gekkonet_ctx_t    *ctx,
     if (!ctx || !ev || !ctx->load_cb)
         return;
 
-    /* Temporarily disable loading to isolate crash source. */
-    GEKKONET_WARN("load_state skipped (temporarily disabled, frame=%d)", ev->data.load.frame);
+    if (!ev->data.load.state || ev->data.load.state_len == 0)
+        return;
+
+    if (!ctx->load_cb(ev->data.load.state, ev->data.load.state_len))
+    {
+        GEKKONET_WARN("load_state callback failed (frame=%d, len=%u)",
+            ev->data.load.frame, ev->data.load.state_len);
+        return;
+    }
+
+    GEKKONET_LOG("load frame=%d len=%u", ev->data.load.frame, ev->data.load.state_len);
 }
 
 static void ra_gekkonet_handle_advance(ra_gekkonet_ctx_t    *ctx,
                                        const GekkoGameEvent *ev)
 {
-    if (!ctx || !ev)
-        return;
+   if (!ctx || !ev)
+       return;
 
     if (!ctx->current_input_buf || !ev->data.adv.inputs)
         return;
@@ -701,25 +850,25 @@ static void ra_gekkonet_handle_advance(ra_gekkonet_ctx_t    *ctx,
     if (ctx->run_frame_cb)
         ctx->run_frame_cb();
 
-    /* After the first successful advance/run, we can safely serialize. */
-    ctx->ready_for_state = true;
+   /* After the first successful advance/run, we can safely serialize. */
+   ctx->ready_for_state = true;
+   ctx->advanced_frame  = true;
 }
 
 static void ra_gekkonet_process_game_events(ra_gekkonet_ctx_t *ctx)
 {
-    int count = 0;
-    GekkoGameEvent **events;
+   int count = 0;
+   GekkoGameEvent **events;
 
-    if (!ctx || !ctx->session)
-        return;
+   if (!ctx || !ctx->session)
+       return;
 
-    ctx->current_input = NULL;
+   ctx->current_input = NULL;
+   ctx->advanced_frame = false;
 
-    events = gekko_update_session(ctx->session, &count);
-    if (!events || count <= 0)
-        return;
-
-    GEKKONET_LOG("game events: %d", count);
+   events = gekko_update_session(ctx->session, &count);
+   if (!events || count <= 0)
+       return;
 
     for (int i = 0; i < count; i++)
     {
@@ -757,8 +906,6 @@ static void ra_gekkonet_process_session_events(ra_gekkonet_ctx_t *ctx)
     if (!events || count <= 0)
         return;
 
-    GEKKONET_LOG("session events: %d", count);
-
     for (int i = 0; i < count; i++)
     {
         const GekkoSessionEvent *ev = events[i];
@@ -794,7 +941,6 @@ void ra_gekkonet_update(ra_gekkonet_ctx_t *ctx)
     if (!ctx || !ctx->session || !ctx->active)
         return;
 
-    GEKKONET_LOG("update start");
     /* Let GekkoNet process incoming/outgoing packets. */
     gekko_network_poll(ctx->session);
 
@@ -803,5 +949,4 @@ void ra_gekkonet_update(ra_gekkonet_ctx_t *ctx)
 
     /* Deliver game events (save/load/advance). */
     ra_gekkonet_process_game_events(ctx);
-    GEKKONET_LOG("update end");
 }
