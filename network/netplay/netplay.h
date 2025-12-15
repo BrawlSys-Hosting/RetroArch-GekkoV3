@@ -167,7 +167,10 @@ typedef struct
    bool                 gekkonet_frame_consumed;
    bool                 gekkonet_running_frame;
    bool                 gekkonet_has_frame;
-   bool                 gekkonet_needs_run;
+   unsigned int         gekkonet_pending_runs;
+   bool                 gekkonet_peer_connected;
+   bool                 gekkonet_host_paused;
+   bool                 gekkonet_fast_catchup; /* client-side fast-forward flag */
    bool                 gekkonet_active;
    netplay_backend_t    backend;
    netplay_client_info_t *client_info;
@@ -213,6 +216,7 @@ bool init_netplay_deferred(const char *server, unsigned port,
    const char *mitm_session);
 bool init_netplay_gekkonet(const char *server, unsigned port,
    const char *mitm_session);
+bool netplay_gekkonet_resume_deferred(net_driver_state_t *net_st);
 void deinit_netplay(void);
 
 bool netplay_driver_ctl(enum rarch_netplay_ctl_state state, void *data);

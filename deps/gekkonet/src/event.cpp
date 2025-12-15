@@ -1,6 +1,7 @@
 #include "event.h"
 #include <cassert>
 #include <cstdlib>
+#include <cstring>
 
 void Gekko::GameEventBuffer::Init(u32 input_size)
 {
@@ -93,6 +94,7 @@ void Gekko::SessionEventSystem::Reset()
 {
     _event_buffer.Reset();
     _events.clear();
+    _payloads.clear();
 }
 
 void Gekko::SessionEventSystem::AddEvent(GekkoSessionEvent* ev)
@@ -161,4 +163,20 @@ void Gekko::SessionEventSystem::AddDesyncDetectedEvent(Frame frame, Handle remot
     ev->data.desynced.local_checksum = check_local;
     ev->data.desynced.remote_checksum = check_remote;
     AddEvent(ev);
+}
+
+void Gekko::SessionEventSystem::AddSnapshotReadyEvent(Frame frame, u32 crc, u8* state, u32 size)
+{
+    auto ev = _event_buffer.GetEvent();
+    ev->type = SnapshotReady;
+    ev->data.snapshot.frame = frame;
+    ev->data.snapshot.crc = crc;
+    ev->data.snapshot.size = size;
+    ev->data.snapshot.state = state;
+    AddEvent(ev);
+    /* Own the buffer so it stays valid for the event lifetime. */
+    std::unique_ptr<u8[]> owned(new u8[size]);
+    std::memcpy(owned.get(), state, size);
+    ev->data.snapshot.state = owned.get();
+    _payloads.push_back(std::move(owned));
 }

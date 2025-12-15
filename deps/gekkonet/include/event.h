@@ -63,6 +63,7 @@ namespace Gekko {
         void AddSpectatorUnpausedEvent();
 
         void AddDesyncDetectedEvent(Frame frame, Handle remote, u32 check_local, u32 check_remote);
+        void AddSnapshotReadyEvent(Frame frame, u32 crc, u8* state, u32 size);
 
     private:
         void AddEvent(GekkoSessionEvent* ev);
@@ -71,5 +72,7 @@ namespace Gekko {
         std::vector<GekkoSessionEvent*> _events;
 
         SessionEventBuffer _event_buffer;
+        /* Owns any payloads attached to session events (e.g., snapshot buffers). */
+        std::vector<std::unique_ptr<u8[]>> _payloads;
     };
 }

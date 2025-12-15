@@ -28,7 +28,7 @@ namespace Gekko {
 	};
 
 	struct InputBuffer {
-		static const u32 BUFF_SIZE = 128;
+		static const u32 BUFF_SIZE = 8192;
 
 		InputBuffer();
 
@@ -37,6 +37,9 @@ namespace Gekko {
 		void AddLocalInput(Frame frame, u8* input);
 
 		void AddInput(Frame frame, u8* input);
+
+        /* Force-write an input for a given frame without advancing last_received. */
+        void ForceFill(Frame frame, u8* input);
 
 		void SetDelay(u8 delay);
 

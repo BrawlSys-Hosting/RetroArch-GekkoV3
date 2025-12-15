@@ -50,38 +50,71 @@ void Gekko::InputBuffer::AddLocalInput(Frame frame, u8* input)
 
 void Gekko::InputBuffer::AddInput(Frame frame, u8* input)
 {
-	if (frame == _last_received_input + 1) {
-		if (_input_prediction_window > 0 && _first_predicted_input == frame) {
-			if (!_inputs[frame % BUFF_SIZE]->IsEqualTo(input)) {
-				// first mark the incorrect prediction 
-				_incorrent_predicted_input = _first_predicted_input;
+    /* First packet: accept any frame as baseline and backfill earlier frames. */
+    if (_last_received_input == GameInput::NULL_FRAME) {
+        if (frame > 0) {
+            /* Fill frames 0..frame-1 with the first input so early frames exist. */
+            for (Frame f = 0; f < frame; f++) {
+                _inputs[f % BUFF_SIZE]->Init(f, input, _input_size);
+            }
+        }
+        _inputs[frame % BUFF_SIZE]->Init(frame, input, _input_size);
+        _last_received_input = frame;
+        ResetPrediction();
+        return;
+    }
 
-				// then clear all the predictions made starting from the marked prediction 
-				// since theyre most likely also incorrect.
-				const Frame diff = _last_predicted_input - _first_predicted_input;
-				for (Frame i = 0; i <= diff; i++) {
-					_inputs[(_incorrent_predicted_input + i) % BUFF_SIZE]->Clear();
-				}
+    /* Drop duplicates/old frames. */
+    if (frame <= _last_received_input)
+        return;
 
-				// then we reset the prediction values and proceed like normal
-				ResetPrediction();
-			}
-			else {
-				// if it was correct and the pred values are the same then we reset the pred values
-				// otherwise we move the first predicted input forward to the next frame
-				if (_first_predicted_input == _last_predicted_input) {
-					ResetPrediction();
-				} else {
-					_first_predicted_input++;
-				}
-				// advance since the input was correct.
-				_last_received_input++;
-				return;
-			}
-		}
-		_last_received_input++;
-		_inputs[frame % BUFF_SIZE]->Init(frame, input, _input_size);
-	}
+    /* Handle missing gap by backfilling with last known (or empty) input. */
+    if (frame > _last_received_input + 1) {
+        ResetPrediction();
+        Frame prev_frame = _last_received_input;
+        u8* fill_src = _inputs[prev_frame % BUFF_SIZE]->input ? _inputs[prev_frame % BUFF_SIZE]->input.get() : _empty_input.get();
+        for (Frame f = _last_received_input + 1; f < frame; f++) {
+            _inputs[f % BUFF_SIZE]->Init(f, fill_src, _input_size);
+        }
+    }
+
+    /* Normal in-order progression. */
+    if (_input_prediction_window > 0 && _first_predicted_input == frame) {
+        if (!_inputs[frame % BUFF_SIZE]->IsEqualTo(input)) {
+            // first mark the incorrect prediction 
+            _incorrent_predicted_input = _first_predicted_input;
+
+            // then clear all the predictions made starting from the marked prediction 
+            // since theyre most likely also incorrect.
+            const Frame diff = _last_predicted_input - _first_predicted_input;
+            for (Frame i = 0; i <= diff; i++) {
+                _inputs[(_incorrent_predicted_input + i) % BUFF_SIZE]->Clear();
+            }
+
+            // then we reset the prediction values and proceed like normal
+            ResetPrediction();
+        }
+        else {
+            // if it was correct and the pred values are the same then we reset the pred values
+            // otherwise we move the first predicted input forward to the next frame
+            if (_first_predicted_input == _last_predicted_input) {
+                ResetPrediction();
+            } else {
+                _first_predicted_input++;
+            }
+            // advance since the input was correct.
+            _last_received_input++;
+            return;
+        }
+    }
+    _last_received_input = frame;
+    _inputs[frame % BUFF_SIZE]->Init(frame, input, _input_size);
+}
+
+void Gekko::InputBuffer::ForceFill(Frame frame, u8* input)
+{
+    /* Populate the slot without changing last_received; used for backfilling. */
+    _inputs[frame % BUFF_SIZE]->Init(frame, input, _input_size);
 }
 
 void Gekko::InputBuffer::SetDelay(u8 delay)
@@ -192,21 +225,50 @@ u32 Gekko::InputBuffer::PreviousFrame(Frame frame)
 
 std::unique_ptr<Gekko::GameInput> Gekko::InputBuffer::GetInput(Frame frame, bool prediction)
 {
-    auto inp = std::make_unique<GameInput>();
+	auto inp = std::make_unique<GameInput>();
 
-	if (_last_received_input < frame) {
-		// no input? check if we should predict the input
-		if (prediction && CanPredictInput()) {
-			if (HandleInputPrediction(frame)) {
-				inp->Init(_inputs[frame % BUFF_SIZE].get());
-			}
-		}
-		return inp;
-	}
+    /* If we've never seen any input yet, just hand back neutral data so callers
+     * don't stall forever. */
+    if (_last_received_input == GameInput::NULL_FRAME) {
+        _inputs[frame % BUFF_SIZE]->Init(frame, _empty_input.get(), _input_size);
+        inp->Init(_inputs[frame % BUFF_SIZE].get());
+        return inp;
+    }
+
+    if (_last_received_input < frame) {
+        // We do not want to hand back a null-frame here because that will
+        // stall the sync loop. If we cannot (or choose not to) predict, fall
+        // back to the latest known input (or neutral) for the requested frame.
+        if (prediction && CanPredictInput()) {
+            if (HandleInputPrediction(frame)) {
+                inp->Init(_inputs[frame % BUFF_SIZE].get());
+                return inp;
+            }
+        }
+
+        // Synthesize something usable so callers keep advancing.
+        u8* src = _empty_input.get();
+        if (_last_received_input != GameInput::NULL_FRAME) {
+            auto& last_inp = _inputs[_last_received_input % BUFF_SIZE];
+            if (last_inp->input && last_inp->input_len == _input_size)
+                src = last_inp->input.get();
+        }
+        _inputs[frame % BUFF_SIZE]->Init(frame, src, _input_size);
+        inp->Init(_inputs[frame % BUFF_SIZE].get());
+        return inp;
+    }
 
     if (_inputs[frame % BUFF_SIZE]->frame != frame ||
         _inputs[frame % BUFF_SIZE]->frame == GameInput::NULL_FRAME) {
-        return inp;
+        /* Synthesize a value from the latest known input so callers always get something,
+         * even if the requested frame wrapped out of the ring buffer or was never added. */
+        u8* src = _empty_input.get();
+        if (_last_received_input != GameInput::NULL_FRAME) {
+            auto& last_inp = _inputs[_last_received_input % BUFF_SIZE];
+            if (last_inp->input && last_inp->input_len == _input_size)
+                src = last_inp->input.get();
+        }
+        _inputs[frame % BUFF_SIZE]->Init(frame, src, _input_size);
     }
 
 	inp->Init(_inputs[frame % BUFF_SIZE].get());

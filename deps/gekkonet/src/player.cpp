@@ -11,6 +11,9 @@ Gekko::Player::Player(Handle phandle, GekkoPlayerType type, NetAddress* addr, u3
 
 	stats.last_acked_frame = -1;
 	stats.last_sent_sync_message = 0;
+    /* Initialize receive timestamps to a sentinel; they will be updated on first packet. */
+    stats.last_received_message = (u64)-1;
+    stats.last_received_frame   = 0;
 
 	_type = type;
 	_status = _type == LocalPlayer ? Connected : Initiating;

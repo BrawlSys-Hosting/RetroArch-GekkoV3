@@ -144,7 +144,8 @@ typedef enum GekkoSessionEventType {
     SessionStarted,
     SpectatorPaused,
     SpectatorUnpaused,
-    DesyncDetected
+    DesyncDetected,
+    SnapshotReady
 } GekkoSessionEventType;
 
 typedef struct GekkoSessionEvent {
@@ -168,6 +169,12 @@ typedef struct GekkoSessionEvent {
             unsigned int remote_checksum;
             int remote_handle;
         } desynced;
+        struct Snapshot {
+            int frame;
+            unsigned int crc;
+            unsigned int size;
+            unsigned char* state;
+        } snapshot;
     } data;
 } GekkoSessionEvent;
 
@@ -203,6 +210,19 @@ GEKKONET_API float gekko_frames_ahead(GekkoSession* session);
 GEKKONET_API void gekko_network_stats(GekkoSession* session, int player, GekkoNetworkStats* stats);
 
 GEKKONET_API void gekko_network_poll(GekkoSession* session);
+
+/* Push a full snapshot to all remotes (host side). */
+GEKKONET_API bool gekko_send_snapshot(GekkoSession* session,
+                                      const void* data,
+                                      unsigned int size,
+                                      unsigned int crc,
+                                      int frame);
+/* Client-side: enqueue a received snapshot for later application. */
+GEKKONET_API bool gekko_queue_snapshot_apply(GekkoSession* session,
+                                             const void* data,
+                                             unsigned int size,
+                                             unsigned int crc,
+                                             int frame);
 
 #ifndef GEKKONET_NO_ASIO
 

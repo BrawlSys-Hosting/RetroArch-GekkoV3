@@ -71,6 +71,9 @@ typedef struct ra_gekkonet_ctx
    GekkoNetAdapter *adapter;
    GekkoConfig      cfg;
    unsigned short   bound_port;
+   int              actor_handles[MAX_USERS];
+   int              actor_ports[MAX_USERS];
+   int              actor_count;
 
    ra_gekkonet_save_state_cb      save_cb;
    ra_gekkonet_load_state_cb      load_cb;
@@ -89,6 +92,27 @@ typedef struct ra_gekkonet_ctx
    size_t       remote_addrs_cap;
    int          local_actor_count;
    int          remote_actor_count;
+
+   /* TCP snapshot channel */
+   int          tcp_fd;
+   int          tcp_listen_fd;
+   unsigned short tcp_port;
+   bool         tcp_is_client;
+   char         tcp_host[256];
+   /* incoming snapshot receive buffer */
+   unsigned char *tcp_snap_buf;
+   unsigned int  tcp_snap_expected;
+   unsigned int  tcp_snap_received;
+   bool          tcp_snap_header_read;
+   unsigned int  tcp_snap_crc;
+   unsigned int  tcp_snap_frame;
+
+   /* Queued AdvanceEvent inputs so the frontend can run them one by one. */
+   unsigned char *queued_inputs;
+   size_t         queued_input_head;
+   size_t         queued_input_count;
+   size_t         queued_input_cap;
+   size_t         input_blob_size;
 
    bool ready_for_state;
    bool owns_adapter;
@@ -110,6 +134,17 @@ void ra_gekkonet_set_session_event_cb(ra_gekkonet_ctx_t            *ctx,
                                       ra_gekkonet_session_event_cb  cb,
                                       void                         *userdata);
 
+/* Explicitly map a Gekko actor handle to a RetroPad port index. */
+bool ra_gekkonet_set_actor_port(ra_gekkonet_ctx_t *ctx,
+                                int                handle,
+                                int                port);
+
+/* Optional: configure TCP snapshot channel (host/client, peer host, port). */
+void ra_gekkonet_set_tcp_params(ra_gekkonet_ctx_t *ctx,
+                                bool               is_client,
+                                const char        *peer_host,
+                                unsigned short     port);
+
 void ra_gekkonet_deinit(ra_gekkonet_ctx_t *ctx);
 
 int ra_gekkonet_add_actor(ra_gekkonet_ctx_t *ctx,
@@ -126,8 +161,20 @@ bool ra_gekkonet_push_local_input(ra_gekkonet_ctx_t *ctx,
 
 void ra_gekkonet_update(ra_gekkonet_ctx_t *ctx);
 
+/* Host-only: serialize and send a snapshot to the peer. */
+bool ra_gekkonet_send_snapshot(ra_gekkonet_ctx_t *ctx);
+
 /* Fire a one-shot UDP probe to a given "ip:port" string using the current adapter. */
 void ra_gekkonet_send_probe(const char *addr_string);
+
+/* Push the most recent AdvanceEvent input into the queue for later runs. */
+bool ra_gekkonet_enqueue_current_input(ra_gekkonet_ctx_t *ctx);
+
+/* Pop the next queued input into current_input_buf/current_input. */
+bool ra_gekkonet_dequeue_next_input(ra_gekkonet_ctx_t *ctx);
+
+/* Inspect pending queued inputs. */
+size_t ra_gekkonet_queued_input_count(const ra_gekkonet_ctx_t *ctx);
 
 #ifdef __cplusplus
 }

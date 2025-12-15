@@ -41,6 +41,9 @@ namespace Gekko {
 
         Frame GetLastReceivedFrom(Handle player);
 
+        /* Force-set last received frame for a player and backfill up to that frame with the given input. */
+        void ForceReceivedFrame(Handle player, Frame frame, u8* input);
+
 	private:
 		u8 _num_players;
 

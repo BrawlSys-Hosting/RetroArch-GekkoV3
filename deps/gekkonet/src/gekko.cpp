@@ -2,6 +2,15 @@
 #include "backend.h"
 
 #include <cassert>
+#include <iostream>
+#include <algorithm>
+#include <limits>
+
+#ifndef GEKKONET_TRACE
+#define GEKKONET_TRACE 0
+#endif
+#define GEKKONET_TRACE_LOG(msg) \
+    do { if (GEKKONET_TRACE) { std::cerr << "[gekkonet] " << msg << std::endl; } } while (0)
 
 GekkoSession::~GekkoSession() = default;
 
@@ -14,6 +23,9 @@ Gekko::Session::Session()
 	_disconnected_input = nullptr;
     _last_sent_healthcheck = GameInput::NULL_FRAME;
     _config = GekkoConfig();
+    _pending_snapshot_ready = false;
+    _pending_snapshot_crc = 0;
+    _pending_snapshot_frame = 0;
 }
 
 void Gekko::Session::Init(GekkoConfig* config)
@@ -30,6 +42,7 @@ void Gekko::Session::Init(GekkoConfig* config)
 
     // setup message system.
     _msg.Init(_config.input_size);
+    _msg.SetSession(this);
 
     //setup game event system
     _game_event_buffer.Init(_config.input_size * _config.num_players);
@@ -43,6 +56,73 @@ void Gekko::Session::Init(GekkoConfig* config)
 
     // we only detect desyncs whenever we are not limited saving for now.
     _config.desync_detection = _config.limited_saving ? false : _config.desync_detection;
+}
+
+void Gekko::Session::QueueSnapshotPush(const u8* data, u32 size, u32 crc, Frame frame)
+{
+    if (!data || size == 0)
+        return;
+    _msg.StartSnapshotSend(data, size, crc, frame);
+}
+
+void Gekko::Session::QueueSnapshotApply(const u8* data, u32 size, u32 crc, Frame frame)
+{
+    if (!data || size == 0)
+        return;
+    _pending_snapshot.assign(data, data + size);
+    _pending_snapshot_crc = crc;
+    _pending_snapshot_ready = true;
+    _pending_snapshot_frame = frame;
+    std::cerr << "[gekkonet] queued snapshot apply size=" << size
+              << " crc=" << crc
+              << " frame=" << _pending_snapshot_frame
+              << std::endl;
+}
+
+void Gekko::Session::ApplyLocalSnapshot(const u8* data, u32 size, u32 crc, Frame frame)
+{
+    if (!data || size == 0)
+        return;
+    /* Reset sync state to the snapshot frame. */
+    _sync.Init(_config.num_players, _config.input_size);
+    _sync.SetCurrentFrame(frame);
+    /* Re-apply prediction windows for remotes/locals with a generous window so prediction spans
+     * the post-snapshot catch-up period. */
+    const u8 snap_pred_window = std::max<u8>(_config.input_prediction_window, (u8)64);
+    for (auto& r : _msg.remotes) {
+        _sync.SetInputPredictionWindow(r->handle, snap_pred_window);
+    }
+    for (auto& l : _msg.locals) {
+        _sync.SetInputPredictionWindow(l->handle, snap_pred_window);
+    }
+    /* Reset messaging/bookkeeping. */
+    _msg.ResetAfterSnapshot(frame);
+
+    /* Seed remote inputs at the snapshot frame with neutral input so early frames are satisfied. */
+    u8 *neutral = _disconnected_input ? _disconnected_input.get() : nullptr;
+    if (!neutral) {
+        _disconnected_input = std::make_unique<u8[]>(_config.input_size);
+        std::memset(_disconnected_input.get(), 0, _config.input_size);
+        neutral = _disconnected_input.get();
+    }
+    const Frame seed_window = std::max<Frame>(64, (Frame)snap_pred_window * 4);
+    for (auto& r : _msg.remotes) {
+        _sync.ForceReceivedFrame(r->handle, frame + seed_window, neutral);
+    }
+    for (auto& l : _msg.locals) {
+        _sync.ForceReceivedFrame(l->handle, frame + seed_window, neutral);
+    }
+
+    auto state = _storage.GetState(frame);
+    const u32 max_copy = state->state_len ? state->state_len : _config.state_size;
+    const u32 copy_len = std::min<u32>(size, max_copy);
+    std::memcpy(state->state.get(), data, copy_len);
+    state->state_len = copy_len;
+    state->frame = frame;
+
+    std::cerr << "[gekkonet] applied local snapshot size=" << copy_len
+              << " crc=" << crc
+              << " frame=" << frame << std::endl;
 }
 
 void Gekko::Session::SetLocalDelay(i32 player, u8 delay)
@@ -130,6 +210,16 @@ GekkoGameEvent** Gekko::Session::UpdateSession(i32* count)
         // reset the game event buffer before doing anything else
         _game_event_buffer.Reset();
 
+        /* If a full snapshot was received, inject a load event before gameplay. */
+        if (_pending_snapshot_ready) {
+            ApplyLocalSnapshot(_pending_snapshot.data(),
+                               (u32)_pending_snapshot.size(),
+                               _pending_snapshot_crc,
+                               _pending_snapshot_frame);
+            AddLoadEvent(_current_game_events);
+            _pending_snapshot_ready = false;
+        }
+
         // add inputs so we can continue the session.
         AddDisconnectedPlayerInputs();
 
@@ -204,6 +294,7 @@ void Gekko::Session::NetworkStats(i32 player, GekkoNetworkStats* stats)
 
 void Gekko::Session::NetworkPoll()
 {
+    GEKKONET_TRACE_LOG("NetworkPoll host=" << (void*)_host);
     Poll();
 }
 
@@ -261,7 +352,12 @@ bool Gekko::Session::ShouldDelaySpectator()
         return false;
     }
 
-    const u8 delay = std::min(_config.spectator_delay, (u8)(InputBuffer::BUFF_SIZE * 0.75));
+    /* Clamp spectator delay to the 0-255 range without relying on bit masks
+     * so MSVC does not warn about truncation. */
+    i32 delay_i32 = _config.spectator_delay;
+    if (delay_i32 < 0) delay_i32 = 0;
+    if (delay_i32 > 255) delay_i32 = 255;
+    const u8 delay = static_cast<u8>(delay_i32);
     const Frame current = _sync.GetCurrentFrame();
     const Frame min = _sync.GetMinReceivedFrame();
     const u32 diff = std::abs(min - current);
@@ -295,7 +391,13 @@ void Gekko::Session::SendSessionHealthCheck()
     }
 
     const Frame current = _sync.GetCurrentFrame();
-    const Frame confirmed = (current - _config.input_prediction_window) - 1;
+    Frame confirmed = (current - _config.input_prediction_window) - 1;
+
+    /* On startup, force a health check at frame 0 once we have any state,
+     * so we detect mismatched initial snapshots early. */
+    if (_last_sent_healthcheck == GameInput::NULL_FRAME && current >= 0) {
+        confirmed = 0;
+    }
 
     if (confirmed <= GameInput::NULL_FRAME) {
         return;
@@ -450,6 +552,18 @@ bool Gekko::Session::AddAdvanceEvent(std::vector<GekkoGameEvent*>& ev, bool roll
         std::memcpy(event->data.adv.inputs, inputs.get(), event->data.adv.input_len);
     }
 
+    /* Throttle advance diagnostics to verify progress. */
+    {
+        static unsigned adv_tick = 0;
+        if (adv_tick < 3 || (adv_tick % 240) == 0) {
+            std::cerr << "[gekkonet] AdvanceEvent frame=" << frame
+                      << " rollback=" << rolling_back
+                      << " input_len=" << event->data.adv.input_len
+                      << std::endl;
+        }
+        adv_tick++;
+    }
+
 	return true;
 }
 
@@ -494,12 +608,17 @@ void Gekko::Session::Poll()
 {
 	// return if no host is defined.
     if (!_host) {
+        GEKKONET_TRACE_LOG("Poll: no host adapter set");
         return;
     }
 
     // fetch data from network
     int length = 0;
 	auto data = _host->receive_data(&length);
+    static u32 poll_tick = 0;
+    if ((poll_tick++ % 120) == 0) {
+        GEKKONET_TRACE_LOG("Poll receive length=" << length);
+    }
 
     // process the data we received
     _msg.HandleData(_host, data, length);
@@ -520,12 +639,18 @@ void Gekko::Session::Poll()
     SendNetworkHealthCheck();
 
 	// now send data
+    GEKKONET_TRACE_LOG("Poll calling SendPendingOutput");
 	_msg.SendPendingOutput(_host);
 }
 
 bool Gekko::Session::AllPlayersValid()
 {
 	if (!_started) {
+        // Do not start until we have all expected players added.
+        if (_msg.locals.size() + _msg.remotes.size() < _config.num_players) {
+            return false;
+        }
+
 		if (!_msg.CheckStatusActors()) {
 			return false;
 		}
@@ -566,6 +691,15 @@ void Gekko::Session::HandleReceivedInputs()
                 Frame frame = start + j;
                 u8* input = &current->input.inputs[(player_offset * i) + ((j - 1) * _config.input_size)];
                 _sync.AddRemoteInput(handle, input, frame);
+                // Debug: confirm remote input ingestion and last-received frame (throttled)
+                static unsigned add_input_tick = 0;
+                if (add_input_tick < 3 || (add_input_tick % 240) == 0) {
+                    std::cerr << "[gekkonet] AddRemoteInput handle=" << handle
+                              << " frame=" << frame
+                              << " last_recv_now=" << _sync.GetLastReceivedFrom(handle)
+                              << std::endl;
+                }
+                add_input_tick++;
                 if (j == count) {
                     _msg.SendInputAck(spectating ? current->handles[0] : handle, frame);
                 }
@@ -587,14 +721,27 @@ void Gekko::Session::SendLocalInputs()
 		const Frame current = _msg.GetLastAddedInput(false) + 1;
         const Frame delay = GetMinLocalDelay();
 
-		std::unique_ptr<u8[]> inputs;
-		for (Frame frame = current; frame <= current + delay; frame++) {
-			if (!_sync.GetLocalInputs(handles, inputs, frame)) {
-				break;
-			}
-			_msg.AddInput(frame, inputs.get());
-		}
-	}
+        std::unique_ptr<u8[]> inputs;
+        for (Frame frame = current; frame <= current + delay; frame++) {
+            if (!_sync.GetLocalInputs(handles, inputs, frame)) {
+                /* If we have not received a local packet for this frame yet, fall back to
+                 * sending a neutral input so we still advance the network state. */
+                static unsigned local_miss_tick = 0;
+                if (local_miss_tick < 5 || (local_miss_tick % 240) == 0) {
+                    std::cerr << "[gekkonet] SendLocalInputs missing local frame=" << frame
+                              << " handles=" << handles.size()
+                              << "; sending neutral" << std::endl;
+                }
+                local_miss_tick++;
+
+                auto neutral = std::make_unique<u8[]>(_config.input_size * handles.size());
+                std::memset(neutral.get(), 0, _config.input_size * handles.size());
+                _msg.AddInput(frame, neutral.get());
+                continue;
+            }
+            _msg.AddInput(frame, inputs.get());
+        }
+    }
 }
 
 u8 Gekko::Session::GetMinLocalDelay()

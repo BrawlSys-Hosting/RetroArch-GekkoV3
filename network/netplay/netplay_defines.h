@@ -151,7 +151,9 @@ enum net_driver_state_flags
    NET_DRIVER_ST_FLAG_HAS_SET_NETPLAY_MODE         = (1 << 3),
    NET_DRIVER_ST_FLAG_HAS_SET_NETPLAY_IP_ADDRESS   = (1 << 4),
    NET_DRIVER_ST_FLAG_HAS_SET_NETPLAY_IP_PORT      = (1 << 5),
-   NET_DRIVER_ST_FLAG_HAS_SET_NETPLAY_CHECK_FRAMES = (1 << 6)
+   NET_DRIVER_ST_FLAG_HAS_SET_NETPLAY_CHECK_FRAMES = (1 << 6),
+   /* Defer GekkoNet start until a core reports a non-zero serialize size. */
+   NET_DRIVER_ST_FLAG_GEKKONET_DEFERRED            = (1 << 7)
 };
 
 #endif

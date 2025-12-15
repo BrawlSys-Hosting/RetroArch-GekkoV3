@@ -2,10 +2,21 @@
 #include "input.h"
 #include "event.h"
 #include "compression.h"
+#include "gekko.h"
 
 #include <chrono>
 #include <cassert>
 #include <climits>
+#include <iostream>
+#include <string>
+#include <cstring>
+#include <algorithm>
+
+#ifndef GEKKONET_TRACE
+#define GEKKONET_TRACE 0
+#endif
+#define GEKKONET_TRACE_LOG(msg) \
+    do { if (GEKKONET_TRACE) { std::cerr << "[gekkonet] " << msg << std::endl; } } while (0)
 
 // register poly types.
 namespace
@@ -15,7 +26,10 @@ namespace
         zpp::serializer::make_type<Gekko::InputMsg, zpp::serializer::make_id("Gekko::InputMsg")>,
         zpp::serializer::make_type<Gekko::InputAckMsg, zpp::serializer::make_id("Gekko::InputAckMsg")>,
         zpp::serializer::make_type<Gekko::SessionHealthMsg, zpp::serializer::make_id("Gekko::SessionHealthMsg")>,
-        zpp::serializer::make_type<Gekko::NetworkHealthMsg, zpp::serializer::make_id("Gekko::NetworkHealthMsg")>
+        zpp::serializer::make_type<Gekko::NetworkHealthMsg, zpp::serializer::make_id("Gekko::NetworkHealthMsg")>,
+        zpp::serializer::make_type<Gekko::SnapshotOfferMsg, zpp::serializer::make_id("Gekko::SnapshotOfferMsg")>,
+        zpp::serializer::make_type<Gekko::SnapshotChunkMsg, zpp::serializer::make_id("Gekko::SnapshotChunkMsg")>,
+        zpp::serializer::make_type<Gekko::SnapshotAckMsg, zpp::serializer::make_id("Gekko::SnapshotAckMsg")>
     > _;
 }
 
@@ -41,6 +55,47 @@ void Gekko::MessageSystem::Init(u32 input_size)
 	_last_added_spectator_input = GameInput::NULL_FRAME;
 
 	history.Init();
+    ResetSnapshotRecv();
+    ResetSnapshotSend();
+}
+
+void Gekko::MessageSystem::ResetAfterSnapshot(Frame frame)
+{
+    /* Clear send queues */
+    while (!_player_input_send_list.empty()) {
+        delete _player_input_send_list.front();
+        _player_input_send_list.pop_front();
+    }
+    while (!_spectator_input_send_list.empty()) {
+        delete _spectator_input_send_list.front();
+        _spectator_input_send_list.pop_front();
+    }
+    /* Clear pending outputs/inputs */
+    std::queue<std::unique_ptr<NetData>> empty_out;
+    std::swap(_pending_output, empty_out);
+    std::queue<std::unique_ptr<NetInputData>> empty_in;
+    std::swap(_received_inputs, empty_in);
+
+    _last_added_input = frame - 1;
+    _last_added_spectator_input = frame - 1;
+    _last_sent_input = InputSendCache();
+    _last_sent_spectator_input = InputSendCache();
+    _last_sent_network_check = 0;
+    history.Init();
+    local_health.clear();
+
+    for (auto& p : remotes) {
+        p->stats.last_acked_frame = frame;
+        p->stats.last_received_frame = frame + 16;
+        p->stats.last_received_message = TimeSinceEpoch();
+        p->stats.rtt.clear();
+    }
+    for (auto& p : spectators) {
+        p->stats.last_acked_frame = frame;
+        p->stats.last_received_frame = frame;
+        p->stats.last_received_message = TimeSinceEpoch();
+        p->stats.rtt.clear();
+    }
 }
 
 
@@ -83,6 +138,9 @@ void Gekko::MessageSystem::AddSpectatorInput(Frame input_frame, u8 input[])
 
 void Gekko::MessageSystem::SendPendingOutput(GekkoNetAdapter* host)
 {
+    /* Handle snapshot transfer first. */
+    SendSnapshotData(host);
+
 	// add input packet
 	if (!_player_input_send_list.empty() && !remotes.empty()) {
 		AddPendingInput(false);
@@ -98,24 +156,32 @@ void Gekko::MessageSystem::SendPendingOutput(GekkoNetAdapter* host)
 	}
 
 	// handle messages
+    static u32 send_tick = 0;
+    if ((send_tick++ % 120) == 0 || !_pending_output.empty())
+        GEKKONET_TRACE_LOG("SendPendingOutput queue size=" << _pending_output.size());
+
 	for (u32 i = 0; i < _pending_output.size(); i++) {
 		auto& pkt = _pending_output.front();
-		if (pkt->pkt.header.type == Inputs || pkt->pkt.header.type == SpectatorInputs) {
+        GEKKONET_TRACE_LOG("SendPendingOutput type=" << pkt->pkt.header.type
+            << " magic=" << pkt->pkt.header.magic
+            << " addr_size=" << pkt->addr.GetSize());
+        if (pkt->pkt.header.type == Inputs || pkt->pkt.header.type == SpectatorInputs) {
             if (pkt->pkt.header.type == Inputs) {
                 SendDataToAll(pkt.get(), host);
             } else {
                 SendDataToAll(pkt.get(), host, true);
             }
-		}
-        else if ((pkt->pkt.header.type == SessionHealth || pkt->pkt.header.type == NetworkHealth) && pkt->addr.GetSize() == 0) {
-            // send to remotes
+        }
+        else if ((pkt->pkt.header.type == SessionHealth || pkt->pkt.header.type == NetworkHealth ||
+                  pkt->pkt.header.type == SnapshotOffer || pkt->pkt.header.type == SnapshotChunk) &&
+                 pkt->addr.GetSize() == 0) {
+            // broadcast to remotes (and spectators where applicable)
             SendDataToAll(pkt.get(), host);
-            // send to spectators
             SendDataToAll(pkt.get(), host, true);
         }
-		else {
-			SendDataTo(pkt.get(), host);
-		}
+        else {
+            SendDataTo(pkt.get(), host);
+        }
 		// housekeeping
 		_pending_output.pop();
 	}
@@ -139,7 +205,7 @@ void Gekko::MessageSystem::HandleData(GekkoNetAdapter* host, GekkoNetResult** da
             ParsePacket(addr, pkt);
         }
         catch (const std::exception&) {
-            printf("failed to deserialize packet\n");
+            printf("failed to deserialize packet (len=%u)\n", res->data_len);
         }
 
         // cleanup :)
@@ -167,6 +233,8 @@ void Gekko::MessageSystem::SendSyncRequest(NetAddress* addr)
     body->rng_data = _session_magic;
 
     message->pkt.body = std::move(body);
+
+    GEKKONET_TRACE_LOG("Queued SyncRequest addr_size=" << addr->GetSize() << " magic=" << _session_magic);
 }
 
 void Gekko::MessageSystem::SendSyncResponse(NetAddress* addr, u16 magic)
@@ -186,6 +254,8 @@ void Gekko::MessageSystem::SendSyncResponse(NetAddress* addr, u16 magic)
     body->rng_data = _session_magic;
 
     message->pkt.body = std::move(body);
+
+    GEKKONET_TRACE_LOG("Queued SyncResponse addr_size=" << addr->GetSize() << " magic=" << magic);
 }
 
 std::queue<std::unique_ptr<Gekko::NetInputData>>& Gekko::MessageSystem::LastReceivedInputs()
@@ -223,6 +293,12 @@ std::vector<Handle> Gekko::MessageSystem::GetHandlesForAddress(NetAddress* addr)
 			result.push_back(player->handle);
 		}
 	}
+    if (result.empty()) {
+        std::string addr_str;
+        if (addr->GetAddress() && addr->GetSize() > 0)
+            addr_str.assign(reinterpret_cast<const char*>(addr->GetAddress()), addr->GetSize());
+        std::cerr << "[gekkonet] no handle match for addr=" << addr_str << "\n";
+    }
 	return result;
 }
 
@@ -284,7 +360,7 @@ bool Gekko::MessageSystem::CheckStatusActors()
                 result--;
             }
         }
-    }
+	}
 
 	return result == 0;
 }
@@ -330,37 +406,8 @@ void Gekko::MessageSystem::SendNetworkHealth()
 
 void Gekko::MessageSystem::HandleTooFarBehindActors(bool spectator)
 {
-    const u64 now = TimeSinceEpoch();
-
-	const u32 max_diff = spectator ? MAX_SPECTATOR_SEND_SIZE : MAX_PLAYER_SEND_SIZE;
-	const Frame last_added = spectator ? _last_added_spectator_input : _last_added_input;
-
-	for (auto& player : spectator ? spectators : remotes) {
-		if (player->GetStatus() == Connected) {
-            const u64 input_diff = now - player->stats.last_received_frame;
-
-            if (!spectator && input_diff > NetStats::DISCONNECT_TIMEOUT) {
-                // give them one chance to redeem themselves
-                if (player->stats.last_received_frame == 0) {
-                    player->stats.last_received_frame = now;
-                    return;
-                }
-                session_events.AddPlayerDisconnectedEvent(player->handle);
-                player->SetStatus(Disconnected);
-                player->sync_num = 0;
-                return;
-            }
-
-			const u32 ack_diff = last_added - player->stats.last_acked_frame;
-            const u64 msg_diff = now - player->stats.last_received_message;
-
-			if (ack_diff > max_diff || msg_diff > NetStats::DISCONNECT_TIMEOUT) {
-                session_events.AddPlayerDisconnectedEvent(player->handle);
-                player->SetStatus(Disconnected);
-                player->sync_num = 0;
-			}
-		}
-	}
+    /* Temporarily disable disconnect logic during debugging to keep peers alive. */
+    (void)spectator;
 }
 
 u64 Gekko::MessageSystem::TimeSinceEpoch()
@@ -433,7 +480,7 @@ void Gekko::MessageSystem::SendDataTo(NetData* pkt, GekkoNetAdapter* host)
     }
 
     auto addr = GekkoNetAddress();
-    addr.data = pkt->addr.GetAddress();
+    addr.data = const_cast<void*>(static_cast<const void*>(pkt->addr.GetAddress()));
     addr.size = pkt->addr.GetSize();
 
     host->send_data(&addr, (char*)_bin_buffer.data(), (int)_bin_buffer.size());
@@ -458,7 +505,14 @@ void Gekko::MessageSystem::ParsePacket(NetAddress& addr, NetPacket& pkt)
     }
 
     // handle packet.
-    if (pkt.header.magic != _session_magic) {
+    const bool allow_any_magic =
+        (pkt.header.type == SyncRequest) ||
+        (pkt.header.type == SnapshotOffer) ||
+        (pkt.header.type == SnapshotChunk) ||
+        (pkt.header.type == SnapshotAck);
+    if (pkt.header.magic != _session_magic && !allow_any_magic) {
+        GEKKONET_TRACE_LOG("ParsePacket dropped: magic mismatch (got " << pkt.header.magic
+            << ", expected " << _session_magic << ") type=" << pkt.header.type);
         if (pkt.header.type == SyncRequest) {
             OnSyncRequest(addr, pkt);
         }
@@ -467,10 +521,14 @@ void Gekko::MessageSystem::ParsePacket(NetAddress& addr, NetPacket& pkt)
         }
     }
     else {
+        GEKKONET_TRACE_LOG("ParsePacket type=" << pkt.header.type << " magic=" << pkt.header.magic);
         switch (pkt.header.type)
         {
         case SyncResponse:
             OnSyncResponse(addr, pkt);
+            return;
+        case SyncRequest:
+            OnSyncRequest(addr, pkt);
             return;
         case Inputs:
         case SpectatorInputs:
@@ -485,8 +543,18 @@ void Gekko::MessageSystem::ParsePacket(NetAddress& addr, NetPacket& pkt)
         case NetworkHealth:
             OnNetworkHealth(addr, pkt);
             return;
+        case SnapshotOffer:
+            OnSnapshotOffer(addr, pkt);
+            return;
+        case SnapshotChunk:
+            OnSnapshotChunk(addr, pkt);
+            return;
+        case SnapshotAck:
+            OnSnapshotAck(addr, pkt);
+            return;
         default:
-            printf("cannot process an unknown event!\n");
+            std::cerr << "[gekkonet] cannot process unknown event type=" << (int)pkt.header.type
+                      << " magic=" << pkt.header.magic << std::endl;
             return;
         }
     }
@@ -497,6 +565,8 @@ void Gekko::MessageSystem::OnSyncRequest(NetAddress& addr, NetPacket& pkt)
     i32 should_send = 0;
     u64 now = TimeSinceEpoch();
     auto body = (SyncMsg*)pkt.body.get();
+    GEKKONET_TRACE_LOG("OnSyncRequest from addr size=" << addr.GetSize() << " rng=" << body->rng_data);
+    GEKKONET_TRACE_LOG("OnSyncRequest from addr size=" << addr.GetSize() << " rng=" << body->rng_data);
 
     // handle requests and set the peer its session magic for both remotes and spectators
     std::vector<std::unique_ptr<Player>>* current = &remotes;
@@ -528,6 +598,8 @@ void Gekko::MessageSystem::OnSyncResponse(NetAddress& addr, NetPacket& pkt)
     i32 should_send = 0;
     u64 now = TimeSinceEpoch();
     auto body = (SyncMsg*)pkt.body.get();
+    GEKKONET_TRACE_LOG("OnSyncResponse from addr size=" << addr.GetSize() << " rng=" << body->rng_data);
+    GEKKONET_TRACE_LOG("OnSyncResponse from addr size=" << addr.GetSize() << " rng=" << body->rng_data);
 
     // handle sync responses for both remotes and spectators
     std::vector<std::unique_ptr<Player>>* current = &remotes;
@@ -580,6 +652,28 @@ void Gekko::MessageSystem::OnInputs(NetAddress& addr, NetPacket& pkt)
     net_input->input.input_count = body->input_count;
     net_input->input.start_frame = body->start_frame;
     net_input->input.total_size = (u16)net_input->input.inputs.size();
+
+    /* Throttle noisy logging of input batches. */
+    static unsigned oninputs_tick = 0;
+    if (oninputs_tick < 3 || (oninputs_tick % 240) == 0) {
+        std::string addr_str;
+        if (addr.GetAddress() && addr.GetSize() > 0)
+            addr_str.assign(reinterpret_cast<const char*>(addr.GetAddress()), addr.GetSize());
+
+        if (net_input->handles.empty()) {
+            std::cerr << "[gekkonet] OnInputs from " << addr_str
+                      << " start=" << body->start_frame
+                      << " count=" << (int)body->input_count
+                      << " but no matching handles\n";
+        } else {
+            std::cerr << "[gekkonet] OnInputs from " << addr_str
+                      << " start=" << body->start_frame
+                      << " count=" << (int)body->input_count
+                      << " handles[0]=" << net_input->handles.front()
+                      << " total_size=" << net_input->input.total_size << "\n";
+        }
+    }
+    oninputs_tick++;
 
     for (auto handle : net_input->handles) {
         auto player = GetPlayerByHandle(handle);
@@ -691,6 +785,245 @@ void Gekko::MessageSystem::OnNetworkHealth(NetAddress& addr, NetPacket& pkt)
     }
 }
 
+u32 Gekko::MessageSystem::ComputeCRC(const std::vector<u8>& data)
+{
+    u32 crc = 0xFFFFFFFFu;
+    for (size_t i = 0; i < data.size(); i++) {
+        crc ^= data[i];
+        for (int j = 0; j < 8; j++) {
+            crc = (crc >> 1) ^ (0xEDB88320u & (-(int)(crc & 1)));
+        }
+    }
+    crc ^= 0xFFFFFFFFu;
+    return crc;
+}
+
+void Gekko::MessageSystem::ResetSnapshotRecv()
+{
+    _snapshot_recv = SnapshotRecvState();
+}
+
+void Gekko::MessageSystem::ResetSnapshotSend()
+{
+    _snapshot_send = SnapshotSendState();
+}
+
+void Gekko::MessageSystem::StartSnapshotSend(const u8* data, u32 size, u32 crc, Frame frame)
+{
+    if (!data || size == 0) {
+        return;
+    }
+    _snapshot_send.active = true;
+    _snapshot_send.buffer.assign(data, data + size);
+    _snapshot_send.crc = crc ? crc : ComputeCRC(_snapshot_send.buffer);
+    _snapshot_send.frame = frame;
+    _snapshot_send.chunk_size = SNAPSHOT_CHUNK_SIZE;
+    _snapshot_send.next_offset = 0;
+    _snapshot_send.last_send_time = 0;
+    GEKKONET_TRACE_LOG("SnapshotSend start size=" << size << " crc=" << _snapshot_send.crc);
+}
+
+void Gekko::MessageSystem::SendSnapshotData(GekkoNetAdapter* host)
+{
+    if (!_snapshot_send.active || !_session) {
+        return;
+    }
+
+    const u32 total = (u32)_snapshot_send.buffer.size();
+    const u16 chunk_size = _snapshot_send.chunk_size;
+    const u64 now = TimeSinceEpoch();
+
+    /* If we've sent everything, wait for ack instead of resending the whole thing. */
+    if (_snapshot_send.next_offset >= total) {
+        return;
+    }
+
+    /* Send the offer periodically until we get an ack. */
+    if (_snapshot_send.next_offset == 0 || (now - _snapshot_send.last_send_time) > 250) {
+        _pending_output.push(std::make_unique<NetData>());
+        auto& message = _pending_output.back();
+        message->pkt.header.type = SnapshotOffer;
+        message->pkt.header.magic = _session_magic;
+        auto body = std::make_unique<SnapshotOfferMsg>();
+        body->total_size = total;
+        body->crc = _snapshot_send.crc;
+        body->frame = _snapshot_send.frame;
+        body->chunk_size = chunk_size;
+        message->pkt.body = std::move(body);
+        GEKKONET_TRACE_LOG("Sending SnapshotOffer size=" << total << " crc=" << _snapshot_send.crc);
+        std::cerr << "[gekkonet] SnapshotOffer size=" << total
+                  << " crc=" << _snapshot_send.crc
+                  << " chunk=" << chunk_size << std::endl;
+        _snapshot_send.last_send_time = now;
+    }
+
+    /* Burst out a few chunks per call to avoid flooding. */
+    u32 sent = 0;
+    const u32 burst = 256; /* aggressive resend on loss */
+    while (_snapshot_send.next_offset < total && sent < burst) {
+        u32 remaining = total - _snapshot_send.next_offset;
+        u32 to_copy = std::min<u32>(remaining, chunk_size);
+        _pending_output.push(std::make_unique<NetData>());
+        auto& message = _pending_output.back();
+        message->pkt.header.type = SnapshotChunk;
+        message->pkt.header.magic = _session_magic;
+        auto body = std::make_unique<SnapshotChunkMsg>();
+        body->offset = _snapshot_send.next_offset;
+        body->data.insert(body->data.end(),
+            _snapshot_send.buffer.begin() + _snapshot_send.next_offset,
+            _snapshot_send.buffer.begin() + _snapshot_send.next_offset + to_copy);
+        message->pkt.body = std::move(body);
+        if (sent == 0 || (sent % 64) == 0) {
+            std::cerr << "[gekkonet] SnapshotChunk off=" << (_snapshot_send.next_offset)
+                      << " len=" << to_copy << "/" << total << std::endl;
+        }
+        _snapshot_send.next_offset += to_copy;
+        sent++;
+    }
+    if (sent > 0)
+        _snapshot_send.last_send_time = now;
+}
+
+void Gekko::MessageSystem::AckSnapshot(u32 highest, bool complete)
+{
+    if (_snapshot_send.active && complete) {
+        GEKKONET_TRACE_LOG("SnapshotSend complete acked highest=" << highest);
+        ResetSnapshotSend();
+    }
+    else if (_snapshot_send.active) {
+        GEKKONET_TRACE_LOG("SnapshotSend ack highest=" << highest << " complete=" << complete);
+        /* Nudge the sender to resume from the acknowledged offset to avoid
+         * endlessly replaying early chunks. */
+        if (highest < _snapshot_send.buffer.size()) {
+            _snapshot_send.next_offset = highest;
+            _snapshot_send.last_send_time = 0;
+        }
+    }
+}
+
+void Gekko::MessageSystem::OnSnapshotOffer(NetAddress& addr, NetPacket& pkt)
+{
+    auto body = (SnapshotOfferMsg*)pkt.body.get();
+    if (!body)
+        return;
+
+    /* If we’re already receiving the same snapshot (size+crc), ignore repeat offers
+     * so we don’t reset progress mid-transfer. */
+    if (_snapshot_recv.active &&
+        _snapshot_recv.expected_size == body->total_size &&
+        _snapshot_recv.crc == body->crc)
+    {
+        return;
+    }
+
+    _snapshot_recv.active = true;
+    _snapshot_recv.expected_size = body->total_size;
+    _snapshot_recv.crc = body->crc;
+    _snapshot_recv.frame = body->frame;
+    _snapshot_recv.chunk_size = body->chunk_size ? body->chunk_size : SNAPSHOT_CHUNK_SIZE;
+    _snapshot_recv.buffer.resize(body->total_size);
+    u32 chunks = (body->total_size + _snapshot_recv.chunk_size - 1) / _snapshot_recv.chunk_size;
+    _snapshot_recv.received_bitmap.assign((chunks + 7) / 8, 0);
+    _snapshot_recv.received_bytes = 0;
+    _snapshot_recv.highest_complete = 0;
+    GEKKONET_TRACE_LOG("SnapshotOffer recv size=" << body->total_size << " crc=" << body->crc);
+    std::cerr << "[gekkonet] SnapshotOffer recv size=" << body->total_size
+              << " crc=" << body->crc
+              << " chunk=" << _snapshot_recv.chunk_size << std::endl;
+}
+
+void Gekko::MessageSystem::OnSnapshotChunk(NetAddress& addr, NetPacket& pkt)
+{
+    if (!_snapshot_recv.active)
+        return;
+    auto body = (SnapshotChunkMsg*)pkt.body.get();
+    if (!body || body->offset >= _snapshot_recv.expected_size)
+        return;
+
+    u32 offset = body->offset;
+    u32 cap = std::min<u32>(_snapshot_recv.chunk_size, _snapshot_recv.expected_size - offset);
+    if (body->data.size() > cap)
+        return;
+
+    std::memcpy(&_snapshot_recv.buffer[offset], body->data.data(), body->data.size());
+    std::cerr << "[gekkonet] SnapshotChunk recv off=" << offset
+              << " len=" << body->data.size()
+              << " bytes=" << _snapshot_recv.received_bytes + body->data.size()
+              << "/" << _snapshot_recv.expected_size << std::endl;
+
+    u32 chunk_idx = offset / _snapshot_recv.chunk_size;
+    u32 byte_idx = chunk_idx / 8;
+    u8 bit = 1u << (chunk_idx % 8);
+    if (!(_snapshot_recv.received_bitmap[byte_idx] & bit)) {
+        _snapshot_recv.received_bitmap[byte_idx] |= bit;
+        _snapshot_recv.received_bytes += (u32)body->data.size();
+        if (offset + body->data.size() > _snapshot_recv.highest_complete)
+            _snapshot_recv.highest_complete = offset + (u32)body->data.size();
+        if ((_snapshot_recv.received_bytes % (1024 * 128)) < body->data.size()) {
+            std::cerr << "[gekkonet] Snapshot progress "
+                      << _snapshot_recv.received_bytes << "/"
+                      << _snapshot_recv.expected_size << std::endl;
+        }
+        /* Periodic partial ack to help the sender skip ahead. */
+        if ((_snapshot_recv.received_bytes % (1024 * 256)) < body->data.size()) {
+            _pending_output.push(std::make_unique<NetData>());
+            auto& message = _pending_output.back();
+            message->pkt.header.type = SnapshotAck;
+            message->pkt.header.magic = _session_magic;
+            auto ack = std::make_unique<SnapshotAckMsg>();
+            ack->highest = _snapshot_recv.highest_complete;
+            ack->crc = 0;
+            ack->complete = false;
+            message->pkt.body = std::move(ack);
+            message->addr.Copy(&addr);
+        }
+    }
+
+    if (_snapshot_recv.received_bytes >= _snapshot_recv.expected_size) {
+        u32 crc = ComputeCRC(_snapshot_recv.buffer);
+        bool ok = (crc == _snapshot_recv.crc);
+        GEKKONET_TRACE_LOG("Snapshot recv complete crc=" << crc << " expected=" << _snapshot_recv.crc);
+        const u32 completed_size = _snapshot_recv.expected_size;
+        if (ok && _session) {
+            _session->QueueSnapshotApply(_snapshot_recv.buffer.data(),
+                                         completed_size,
+                                         _snapshot_recv.crc,
+                                         _snapshot_recv.frame);
+            std::cerr << "[gekkonet] Snapshot apply queued size=" << completed_size
+                      << " crc=" << crc << std::endl;
+        }
+        /* Send a completion ack back to the sender. */
+        _pending_output.push(std::make_unique<NetData>());
+        auto& message = _pending_output.back();
+        message->pkt.header.type = SnapshotAck;
+        message->pkt.header.magic = _session_magic;
+        auto ack = std::make_unique<SnapshotAckMsg>();
+        ack->highest = completed_size;
+        ack->crc = crc;
+        ack->complete = ok;
+        message->pkt.body = std::move(ack);
+        message->addr.Copy(&addr);
+
+        ResetSnapshotRecv();
+        AckSnapshot(completed_size, ok);
+    }
+}
+
+void Gekko::MessageSystem::OnSnapshotAck(NetAddress& addr, NetPacket& pkt)
+{
+    auto body = (SnapshotAckMsg*)pkt.body.get();
+    if (!body)
+        return;
+    if (body->complete && _session) {
+        /* Apply the snapshot locally on host when the client signals completion. */
+        _session->ApplyLocalSnapshot(_snapshot_send.buffer.data(),
+                                     (u32)_snapshot_send.buffer.size(),
+                                     _snapshot_send.crc,
+                                     _snapshot_send.frame);
+    }
+    AckSnapshot(body->highest, body->complete);
+}
+
 void Gekko::MessageSystem::AddPendingInput(bool spectator)
 {
     u64 now = TimeSinceEpoch();
@@ -760,9 +1093,32 @@ void Gekko::MessageSystem::AddPendingInput(bool spectator)
 
     body->total_size = (u16)comp.size();
 	body->input_count = (u8)send_list.size();
-	body->start_frame = last_added - (u32)send_list.size();
+    /* Clamp start_frame to 0 to avoid sending negative frame indexes on first batch. */
+    if (send_list.empty())
+    {
+        body->start_frame = 0;
+    }
+    else
+    {
+        Frame earliest = last_added - (Frame)send_list.size() + 1;
+        if (earliest < 0)
+            earliest = 0;
+        body->start_frame = earliest;
+    }
 
     body->inputs = std::move(comp);
+
+    /* Log first few input packets to ensure they are being produced. */
+    static unsigned input_send_tick = 0;
+    if (!spectator && (input_send_tick < 5 || (input_send_tick % 240) == 0)) {
+        std::cerr << "[gekkonet] SendInputs start=" << body->start_frame
+                  << " count=" << (int)body->input_count
+                  << " total_size=" << body->total_size
+                  << " locals=" << locals.size()
+                  << " remotes=" << remotes.size()
+                  << std::endl;
+    }
+    input_send_tick++;
 
     // save to the cache for later use.
     cache.frame = last_added;

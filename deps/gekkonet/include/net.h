@@ -32,7 +32,10 @@ namespace Gekko {
         SyncRequest,
         SyncResponse,
         SessionHealth,
-        NetworkHealth
+        NetworkHealth,
+        SnapshotOffer,
+        SnapshotChunk,
+        SnapshotAck
     };
 
     struct MsgHeader {
@@ -106,6 +109,39 @@ namespace Gekko {
         template <typename Archive, typename Self>
         static void serialize(Archive& a, Self& s) {
             a(s.send_time, s.received);
+        }
+    };
+
+    struct SnapshotOfferMsg : MsgBody {
+        u32 total_size;
+        u32 crc;
+        Frame frame;
+        u16 chunk_size;
+
+        template <typename Archive, typename Self>
+        static void serialize(Archive& a, Self& s) {
+            a(s.total_size, s.crc, s.frame, s.chunk_size);
+        }
+    };
+
+    struct SnapshotChunkMsg : MsgBody {
+        u32 offset;
+        std::vector<u8> data;
+
+        template <typename Archive, typename Self>
+        static void serialize(Archive& a, Self& s) {
+            a(s.offset, s.data);
+        }
+    };
+
+    struct SnapshotAckMsg : MsgBody {
+        u32 highest;
+        u32 crc;
+        bool complete;
+
+        template <typename Archive, typename Self>
+        static void serialize(Archive& a, Self& s) {
+            a(s.highest, s.crc, s.complete);
         }
     };
 

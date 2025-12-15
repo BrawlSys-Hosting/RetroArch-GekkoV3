@@ -8046,6 +8046,14 @@ void core_run(void)
    bool skip_retro_run         = false;
 #ifdef HAVE_NETWORKING
    net_driver_state_t *net_st  = networking_state_get_ptr();
+
+   /* If GekkoNet was requested before the core reported a serialize size,
+    * start it now once the core is ready. */
+   if (net_st && net_st->backend == NETPLAY_BACKEND_GEKKONET &&
+         (net_st->flags & NET_DRIVER_ST_FLAG_GEKKONET_DEFERRED) &&
+         !net_st->gekkonet_active)
+      netplay_gekkonet_resume_deferred(net_st);
+
    bool in_gekkonet_frame      = net_st && net_st->gekkonet_running_frame;
    bool using_gekkonet         = net_st && net_st->backend == NETPLAY_BACKEND_GEKKONET && net_st->gekkonet_active;
    bool netplay_preframe       = in_gekkonet_frame ? true :
@@ -8073,11 +8081,42 @@ void core_run(void)
    else if (late_polling)
       current_core->flags &= ~RETRO_CORE_FLAG_INPUT_POLLED;
 
-   if (using_gekkonet && net_st->gekkonet_needs_run)
+   if (using_gekkonet)
    {
-      net_st->gekkonet_needs_run = false;
-      current_core->retro_run();
-      net_st->gekkonet_has_frame = true;
+      if (net_st->gekkonet_pending_runs > 0)
+      {
+         /* Drain all pending AdvanceEvents (or until queue is empty) so we don't
+          * fall behind and show blank frames. */
+         unsigned runs_this_tick = 0;
+         const unsigned max_runs = 256; /* safety cap to avoid infinite loops */
+
+         while (net_st->gekkonet_pending_runs > 0 && runs_this_tick < max_runs)
+         {
+            if (!ra_gekkonet_dequeue_next_input(&net_st->gekkonet))
+            {
+               net_st->gekkonet_pending_runs = 0;
+               break;
+            }
+            net_st->gekkonet_pending_runs--;
+            runs_this_tick++;
+            current_core->retro_run();
+            net_st->gekkonet_has_frame = true;
+         }
+
+         if (net_st->gekkonet_pending_runs > 0)
+         {
+            static unsigned backlog_log = 0;
+            if (backlog_log < 5 || (backlog_log % 120) == 0)
+               RARCH_LOG("[GekkoNet] pending advances remaining=%u (ran %u this tick)\n",
+                     net_st->gekkonet_pending_runs, runs_this_tick);
+            backlog_log++;
+         }
+      }
+      else
+      {
+         /* Wait for the next AdvanceEvent to avoid double-stepping. */
+         video_driver_cached_frame();
+      }
    }
    else if (!skip_retro_run)
       current_core->retro_run();

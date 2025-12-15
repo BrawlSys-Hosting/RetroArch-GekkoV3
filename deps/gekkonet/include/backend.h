@@ -14,6 +14,7 @@
 #include <map>
 
 namespace Gekko {
+    class Session;
 
     enum PlayerStatus {
         Initiating,
@@ -106,6 +107,11 @@ namespace Gekko {
         void SendSessionHealth(Frame frame, u32 checksum);
 
         void SendNetworkHealth();
+        void SetSession(class Session* session) { _session = session; }
+        /* Begin sending a full snapshot to all remotes (host side). */
+        void StartSnapshotSend(const u8* data, u32 size, u32 crc, Frame frame);
+        /* Clear pending queues/counters after a snapshot resets the timeline. */
+        void ResetAfterSnapshot(Frame frame);
 
 	public:
 		std::vector<std::unique_ptr<Player>> locals;
@@ -121,6 +127,30 @@ namespace Gekko {
         std::map<Frame, u32> local_health;
 
 	private:
+        /* Snapshot send state (host). */
+        struct SnapshotSendState {
+            bool active = false;
+            Frame frame = 0;
+            u32 crc = 0;
+            u16 chunk_size = 0;
+            std::vector<u8> buffer;
+            u32 next_offset = 0;
+            u64 last_send_time = 0;
+        } _snapshot_send;
+
+        /* Snapshot receive state (client). */
+        struct SnapshotRecvState {
+            bool active = false;
+            Frame frame = 0;
+            u32 expected_size = 0;
+            u32 crc = 0;
+            u16 chunk_size = 0;
+            std::vector<u8> buffer;
+            std::vector<u8> received_bitmap; /* 1 bit per chunk */
+            u32 received_bytes = 0;
+            u32 highest_complete = 0;
+        } _snapshot_recv;
+
 		void SendSyncRequest(NetAddress* addr);
 
 		void SendSyncResponse(NetAddress* addr, u16 magic);
@@ -136,6 +166,15 @@ namespace Gekko {
 		void HandleTooFarBehindActors(bool spectator = false);
 
 		u64 TimeSinceEpoch();
+
+        void SendSnapshotData(GekkoNetAdapter* host);
+        void OnSnapshotOffer(NetAddress& addr, NetPacket& pkt);
+        void OnSnapshotChunk(NetAddress& addr, NetPacket& pkt);
+        void OnSnapshotAck(NetAddress& addr, NetPacket& pkt);
+        void ResetSnapshotRecv();
+        void ResetSnapshotSend();
+        u32 ComputeCRC(const std::vector<u8>& data);
+        void AckSnapshot(u32 highest, bool complete);
 
         void SendDataToAll(NetData* pkt, GekkoNetAdapter* host, bool spectators_only = false);
 
@@ -156,11 +195,13 @@ namespace Gekko {
         void OnNetworkHealth(NetAddress& addr, NetPacket& pkt);
 
 	private:
-		const u32 MAX_PLAYER_SEND_SIZE = 64;
-		const u32 MAX_SPECTATOR_SEND_SIZE = 64;
-	    const u32 NUM_TO_SYNC = 4;
+        const u32 MAX_PLAYER_SEND_SIZE = 64;
+        const u32 MAX_SPECTATOR_SEND_SIZE = 64;
+        const u32 NUM_TO_SYNC = 4;
+        /* Snapshot chunk size; bumped for faster transfer on LAN/loopback. */
+        const u32 SNAPSHOT_CHUNK_SIZE = 4096;
 
-		u32 _input_size;
+        u32 _input_size;
 
 		u16 _session_magic;
 
@@ -191,5 +232,7 @@ namespace Gekko {
         InputSendCache _last_sent_spectator_input;
 
         u64 _last_sent_network_check;
+
+        class Session* _session = nullptr; /* back-reference for snapshot delivery */
 	};
 }

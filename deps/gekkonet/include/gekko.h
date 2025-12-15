@@ -22,6 +22,9 @@ struct GekkoSession {
     virtual f32 FramesAhead() = 0;
     virtual void NetworkStats(i32 player, GekkoNetworkStats* stats) = 0;
     virtual void NetworkPoll() = 0;
+    virtual void QueueSnapshotPush(const u8* data, u32 size, u32 crc, Frame frame) = 0;
+        virtual void QueueSnapshotApply(const u8* data, u32 size, u32 crc, Frame frame) = 0;
+        virtual void ApplyLocalSnapshot(const u8* data, u32 size, u32 crc, Frame frame) = 0;
     virtual ~GekkoSession();
 };
 
@@ -50,6 +53,12 @@ namespace Gekko {
         virtual void NetworkStats(i32 player, GekkoNetworkStats* stats);
 
         virtual void NetworkPoll();
+
+        /* Host: enqueue a snapshot to send to remotes. */
+        void QueueSnapshotPush(const u8* data, u32 size, u32 crc, Frame frame);
+        /* Client: receive a completed snapshot and mark it for loading. */
+        void QueueSnapshotApply(const u8* data, u32 size, u32 crc, Frame frame);
+        void ApplyLocalSnapshot(const u8* data, u32 size, u32 crc, Frame frame);
 
 	private:
 		void Poll();
@@ -107,12 +116,17 @@ namespace Gekko {
 
         GekkoNetAdapter* _host;
 
-		MessageSystem _msg;
+        MessageSystem _msg;
 
-		StateStorage _storage;
+        StateStorage _storage;
 
         GameEventBuffer _game_event_buffer;
 
         std::vector<GekkoGameEvent*> _current_game_events;
+
+        std::vector<u8> _pending_snapshot;
+        bool _pending_snapshot_ready = false;
+        u32 _pending_snapshot_crc = 0;
+        Frame _pending_snapshot_frame = 0;
 	};
 }

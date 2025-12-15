@@ -85,6 +85,7 @@
 #endif
 
 #include "netplay_private.h"
+#include "netplay_gekkonet.h"
 
 #ifdef TCP_NODELAY
 #define SET_TCP_NODELAY(fd) \
@@ -225,6 +226,45 @@ static bool netplay_backend_is_gekkonet(const net_driver_state_t *net_st)
    return net_st && net_st->backend == NETPLAY_BACKEND_GEKKONET && net_st->gekkonet_active;
 }
 
+/* Inspect the netplay request-device toggles (exposed in the menu) and
+ * return the first requested port index, or -1 if none are set. */
+static int netplay_gekkonet_requested_port(const settings_t *settings)
+{
+   unsigned max_users = settings ? settings->uints.input_max_users : MAX_USERS;
+
+   if (max_users == 0 || max_users > MAX_USERS)
+      max_users = MAX_USERS;
+
+   if (!settings)
+      return -1;
+
+   for (unsigned i = 0; i < max_users; i++)
+   {
+      if (settings->bools.netplay_request_devices[i])
+         return (int)i;
+   }
+
+   return -1;
+}
+
+/* Pick the first available port that's different from the primary choice. */
+static int netplay_gekkonet_pick_other_port(unsigned max_users, int primary_port)
+{
+   if (max_users == 0 || max_users > MAX_USERS)
+      max_users = MAX_USERS;
+
+   for (unsigned i = 0; i < max_users; i++)
+   {
+      if ((int)i != primary_port)
+         return (int)i;
+   }
+
+   /* Single-user edge case: fall back to primary or 0. */
+   if (primary_port >= 0 && primary_port < (int)max_users)
+      return primary_port;
+   return 0;
+}
+
 static void netplay_gekkonet_reset(net_driver_state_t *net_st)
 {
    if (!net_st)
@@ -239,19 +279,30 @@ static void netplay_gekkonet_reset(net_driver_state_t *net_st)
    net_st->gekkonet_frame_consumed = false;
    net_st->gekkonet_running_frame  = false;
    net_st->gekkonet_has_frame      = false;
-   net_st->gekkonet_needs_run      = false;
+   net_st->gekkonet_pending_runs   = 0;
+   net_st->gekkonet_peer_connected = false;
+   net_st->gekkonet_host_paused    = false;
+   net_st->gekkonet_fast_catchup   = false;
    net_st->gekkonet_active      = false;
 }
 
 static bool netplay_gekkonet_save_state_cb(void *dst,
       unsigned int capacity, unsigned int *out_size, unsigned int *out_crc)
 {
+   static unsigned save_log_tick = 0;
    retro_ctx_serialize_info_t serial_info = {0};
    serial_info.data = dst;
    serial_info.size = capacity;
 
+   if (save_log_tick < 3 || (save_log_tick % 300) == 0)
+      RARCH_LOG("[GekkoNet] save_state requested (capacity=%u)\n", capacity);
+
    if (!core_serialize(&serial_info))
+   {
+      if (save_log_tick < 3 || (save_log_tick % 60) == 0)
+         RARCH_WARN("[GekkoNet] core_serialize failed (capacity=%u)\n", capacity);
       return false;
+   }
 
    if (out_size)
       *out_size = (unsigned int)serial_info.size;
@@ -271,16 +322,31 @@ static bool netplay_gekkonet_save_state_cb(void *dst,
       *out_crc = crc ^ 0xFFFFFFFFu;
    }
 
+   if (save_log_tick < 3 || (save_log_tick % 300) == 0)
+      RARCH_LOG("[GekkoNet] save_state OK (size=%u crc=%08X)\n",
+            (unsigned)serial_info.size,
+            out_crc ? *out_crc : 0);
+   save_log_tick++;
    return true;
 }
 
 static bool netplay_gekkonet_load_state_cb(const void *src,
       unsigned int size)
 {
+   static unsigned load_log_tick = 0;
    retro_ctx_serialize_info_t serial_info = {0};
    serial_info.data_const = src;
    serial_info.size       = size;
-   return core_unserialize(&serial_info);
+   if (load_log_tick < 3 || (load_log_tick % 300) == 0)
+      RARCH_LOG("[GekkoNet] load_state requested (size=%u)\n", size);
+   if (!core_unserialize(&serial_info))
+   {
+      if (load_log_tick < 3 || (load_log_tick % 60) == 0)
+         RARCH_WARN("[GekkoNet] core_unserialize failed (size=%u)\n", size);
+      return false;
+   }
+   load_log_tick++;
+   return true;
 }
 
 static void netplay_gekkonet_run_frame_cb(void)
@@ -288,13 +354,23 @@ static void netplay_gekkonet_run_frame_cb(void)
    net_driver_state_t *net_st = networking_state_get_ptr();
    (void)net_st;
    if (net_st && netplay_backend_is_gekkonet(net_st))
-      net_st->gekkonet_needs_run = true;
+   {
+      net_st->gekkonet_pending_runs++;
+      /* Throttle log spam but keep visibility when multiple advances pile up. */
+      static unsigned run_log_tick = 0;
+      if (run_log_tick < 5 || (run_log_tick % 300) == 0)
+         RARCH_LOG("[GekkoNet] queued advance count=%u\n",
+               net_st->gekkonet_pending_runs);
+      run_log_tick++;
+   }
 }
 
 static void netplay_gekkonet_session_event_cb(
       const GekkoSessionEvent *ev, void *userdata)
 {
    (void)userdata;
+   net_driver_state_t *net_st = networking_state_get_ptr();
+
    if (!ev)
       return;
 
@@ -302,6 +378,54 @@ static void netplay_gekkonet_session_event_cb(
    {
       case PlayerConnected:
          RARCH_LOG("[GekkoNet] player connected (handle=%d)\n", ev->data.connected.handle);
+         if (net_st)
+            net_st->gekkonet_peer_connected = true;
+         /* Ensure any newly connected handle is mapped to a free RetroPad port. */
+         if (net_st && netplay_backend_is_gekkonet(net_st))
+         {
+            int handle = ev->data.connected.handle;
+            bool mapped = false;
+            for (int i = 0; i < net_st->gekkonet.actor_count; i++)
+               if (net_st->gekkonet.actor_handles[i] == handle &&
+                   net_st->gekkonet.actor_ports[i] >= 0)
+                  mapped = true;
+            if (!mapped)
+            {
+               bool used[MAX_USERS] = {0};
+               for (int i = 0; i < net_st->gekkonet.actor_count; i++)
+               {
+                  int p = net_st->gekkonet.actor_ports[i];
+                  if (p >= 0 && p < MAX_USERS)
+                     used[p] = true;
+               }
+               int port = -1;
+               for (int p = 0; p < MAX_USERS; p++)
+               {
+                  if (!used[p])
+                  {
+                     port = p;
+                     break;
+                  }
+               }
+               if (port >= 0)
+               {
+                  ra_gekkonet_set_actor_port(&net_st->gekkonet, handle, port);
+                  RARCH_LOG("[GekkoNet] mapped actor %d to port %d\n", handle, port + 1);
+               }
+            }
+
+            /* Host: push a fresh snapshot to the client to avoid drift. */
+            if (!(net_st->flags & NET_DRIVER_ST_FLAG_NETPLAY_IS_CLIENT))
+            {
+               if (!ra_gekkonet_send_snapshot(&net_st->gekkonet))
+                  RARCH_WARN("[GekkoNet] snapshot send failed\n");
+               else
+                  RARCH_LOG("[GekkoNet] snapshot send started\n");
+            }
+         }
+         break;
+      case SessionStarted:
+         RARCH_LOG("[GekkoNet] session started\n");
          break;
       case PlayerDisconnected:
          RARCH_LOG("[GekkoNet] player disconnected (handle=%d)\n", ev->data.disconnected.handle);
@@ -333,10 +457,33 @@ static void netplay_gekkonet_pack_inputs(net_driver_state_t *net_st,
 
    memset(out, 0, sizeof(*out));
 
-   for (port = 0; port < max_users && port < MAX_USERS; port++)
+   /* Log when buttons change to confirm local inputs are being packed. */
+   static bool local_seen[MAX_USERS] = {false};
+   static uint32_t local_last_buttons[MAX_USERS] = {0};
+
+   if (max_users == 0 || max_users > MAX_USERS)
+      max_users = MAX_USERS;
+
+   /* Prefer actual actor mappings if we have them to avoid touching every port unnecessarily. */
+   unsigned limit_ports = max_users;
+   if (net_st->gekkonet.actor_count > 0 && net_st->gekkonet.actor_count < (int)limit_ports)
+      limit_ports = (unsigned)net_st->gekkonet.actor_count;
+
+   for (port = 0; port < limit_ports; port++)
    {
       unsigned id;
       ra_gekkonet_pad_input_t *pad = &out->players[port];
+      bool should_log = false;
+
+      /* Only log if this port is mapped to an actor. */
+      for (int i = 0; i < net_st->gekkonet.actor_count; i++)
+      {
+         if (net_st->gekkonet.actor_ports[i] == (int)port)
+         {
+            should_log = true;
+            break;
+         }
+      }
 
       for (id = 0; id <= RETRO_DEVICE_ID_JOYPAD_R3; id++)
       {
@@ -356,7 +503,56 @@ static void netplay_gekkonet_pack_inputs(net_driver_state_t *net_st,
       pad->analog_y[1] = (int16_t)net_st->gekkonet_cbs.state_cb(
             port, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_RIGHT,
             RETRO_DEVICE_ID_ANALOG_Y);
+
+      if (should_log && (!local_seen[port] || local_last_buttons[port] != pad->buttons))
+      {
+         uint32_t delta = local_seen[port] ? (local_last_buttons[port] ^ pad->buttons) : pad->buttons;
+         local_last_buttons[port] = pad->buttons;
+         local_seen[port] = true;
+         RARCH_LOG("[GekkoNet][local-input] port=%u buttons=0x%08X delta=0x%08X lx=%d ly=%d rx=%d ry=%d\n",
+               port + 1,
+               pad->buttons,
+               delta,
+               pad->analog_x[0], pad->analog_y[0],
+               pad->analog_x[1], pad->analog_y[1]);
+      }
    }
+}
+
+static void netplay_gekkonet_push_local_input(net_driver_state_t *net_st)
+{
+   if (!net_st || net_st->gekkonet_local_actor < 0)
+      return;
+
+   /* Default: actor id maps to same RetroPad port. */
+   int local_port = net_st->gekkonet_local_actor;
+
+   /* If we have an explicit port mapping for this actor, prefer it. */
+   for (int i = 0; i < net_st->gekkonet.actor_count; i++)
+   {
+      if (net_st->gekkonet.actor_handles[i] == net_st->gekkonet_local_actor &&
+          net_st->gekkonet.actor_ports[i] >= 0 &&
+          net_st->gekkonet.actor_ports[i] < MAX_USERS)
+      {
+         local_port = net_st->gekkonet.actor_ports[i];
+         break;
+      }
+   }
+
+   if (local_port < 0 || local_port >= MAX_USERS)
+      local_port = 0;
+
+   static unsigned input_log_tick = 0;
+   if (input_log_tick < 5)
+   {
+      RARCH_LOG("[GekkoNet] push local input handle=%d port=%d\n",
+            net_st->gekkonet_local_actor, local_port);
+      input_log_tick++;
+   }
+
+   ra_gekkonet_push_local_input(&net_st->gekkonet,
+         net_st->gekkonet_local_actor,
+         &net_st->gekkonet_input.players[local_port]);
 }
 
 static bool netplay_gekkonet_frame(net_driver_state_t *net_st)
@@ -365,29 +561,221 @@ static bool netplay_gekkonet_frame(net_driver_state_t *net_st)
    if (!netplay_backend_is_gekkonet(net_st))
       return false;
 
+   /* Host-side: pause core advance until a peer connects to keep state aligned. */
+   if (!(net_st->flags & NET_DRIVER_ST_FLAG_NETPLAY_IS_CLIENT))
+   {
+      if (!net_st->gekkonet_peer_connected)
+      {
+         ra_gekkonet_update(&net_st->gekkonet); /* keep network poll alive */
+         if (!net_st->gekkonet_host_paused)
+         {
+            net_st->gekkonet_host_paused = true;
+            RARCH_LOG("[GekkoNet] waiting for peer to connect; holding core advance\n");
+         }
+      }
+      else if (net_st->gekkonet_host_paused)
+      {
+         net_st->gekkonet_host_paused = false;
+         RARCH_LOG("[GekkoNet] peer connected; resuming core\n");
+      }
+   }
+
+   /* One-time deferred init-state load (after core is fully up). */
+   {
+      static bool init_state_attempted = false;
+      if (!init_state_attempted)
+      {
+         init_state_attempted = true;
+         const char *init_state_path = getenv("GEKKONET_INIT_STATE");
+         size_t state_sz = core_serialize_size();
+         if (init_state_path && *init_state_path && state_sz > 0)
+         {
+            FILE *f = fopen(init_state_path, "rb");
+            if (!f)
+               RARCH_WARN("[GekkoNet] failed to open GEKKONET_INIT_STATE file: %s\n", init_state_path);
+            else
+            {
+               fseek(f, 0, SEEK_END);
+               long fsz = ftell(f);
+               fseek(f, 0, SEEK_SET);
+               if (fsz <= 0)
+                  RARCH_WARN("[GekkoNet] init state file is empty: %s\n", init_state_path);
+               else if ((size_t)fsz != state_sz)
+                  RARCH_WARN("[GekkoNet] init state size (%ld) differs from core serialize size (%zu); skipping load\n", fsz, state_sz);
+               else
+               {
+                  void *buf = malloc((size_t)fsz);
+                  if (!buf)
+                     RARCH_WARN("[GekkoNet] alloc failed for init state (%ld bytes)\n", fsz);
+                  else
+                  {
+                     size_t rd = fread(buf, 1, (size_t)fsz, f);
+                     if (rd != (size_t)fsz)
+                        RARCH_WARN("[GekkoNet] short read on init state (%zu/%ld)\n", rd, fsz);
+                     else
+                     {
+                        /* Compute init CRC */
+                        unsigned int init_crc = 0xFFFFFFFFu;
+                        const unsigned char *p = (const unsigned char*)buf;
+                        size_t i, j;
+                        for (i = 0; i < (size_t)fsz; i++)
+                        {
+                           init_crc ^= p[i];
+                           for (j = 0; j < 8; j++)
+                              init_crc = (init_crc >> 1) ^ (0xEDB88320u & (-(int)(init_crc & 1)));
+                        }
+                        init_crc ^= 0xFFFFFFFFu;
+
+                        /* Compute current CRC to avoid redundant load */
+                        unsigned int cur_crc = 0;
+                        void *cur = malloc(state_sz);
+                        if (cur && core_serialize(&(retro_ctx_serialize_info_t){ .data = cur, .size = state_sz }))
+                        {
+                           cur_crc = 0xFFFFFFFFu;
+                           const unsigned char *q = (const unsigned char*)cur;
+                           for (i = 0; i < state_sz; i++)
+                           {
+                              cur_crc ^= q[i];
+                              for (j = 0; j < 8; j++)
+                                 cur_crc = (cur_crc >> 1) ^ (0xEDB88320u & (-(int)(cur_crc & 1)));
+                           }
+                           cur_crc ^= 0xFFFFFFFFu;
+                        }
+                        free(cur);
+
+                        RARCH_LOG("[GekkoNet] init state CRC=%08X current CRC=%08X\n", init_crc, cur_crc);
+                        if (cur_crc && init_crc == cur_crc)
+                        {
+                           RARCH_LOG("[GekkoNet] init state matches current; skipping load\n");
+                        }
+                        else
+                        {
+                           retro_ctx_serialize_info_t si = {0};
+                           si.data = buf;
+                           si.size = (size_t)fsz;
+                           if (core_unserialize(&si))
+                           {
+                              /* Recompute post-load CRC */
+                              void *post = malloc(state_sz);
+                              if (post && core_serialize(&(retro_ctx_serialize_info_t){ .data = post, .size = state_sz }))
+                              {
+                                 unsigned int crc = 0xFFFFFFFFu;
+                                 const unsigned char *r = (const unsigned char*)post;
+                                 for (i = 0; i < state_sz; i++)
+                                 {
+                                    crc ^= r[i];
+                                    for (j = 0; j < 8; j++)
+                                       crc = (crc >> 1) ^ (0xEDB88320u & (-(int)(crc & 1)));
+                                 }
+                                 crc ^= 0xFFFFFFFFu;
+                                 RARCH_LOG("[GekkoNet] loaded init state %s post-CRC=%08X\n", init_state_path, crc);
+                              }
+                              free(post);
+                           }
+                           else
+                           {
+                              RARCH_WARN("[GekkoNet] failed to load init state from %s; continuing without it\n", init_state_path);
+                           }
+                        }
+                     }
+                     free(buf);
+                  }
+               }
+               fclose(f);
+            }
+         }
+      }
+   }
+
    if (net_st->gekkonet_running_frame)
       return true;
 
    net_st->gekkonet_running_frame = true;
    net_st->gekkonet_frame_consumed = false;
    net_st->gekkonet_has_frame      = false;
-   net_st->gekkonet_needs_run      = false;
    if (!logged_frame_entry)
    {
       RARCH_LOG("[GekkoNet] netplay_gekkonet_frame first entry\n");
       logged_frame_entry = true;
    }
+   else
+   {
+      static unsigned frame_tick = 0;
+      if ((frame_tick++ % 120) == 0)
+         RARCH_LOG("[GekkoNet] netplay_gekkonet_frame tick=%u", frame_tick);
+   }
    netplay_gekkonet_pack_inputs(net_st, &net_st->gekkonet_input);
 
-   if (net_st->gekkonet_local_actor >= 0)
-      ra_gekkonet_push_local_input(&net_st->gekkonet,
-            net_st->gekkonet_local_actor, &net_st->gekkonet_input);
+   /* Pump inputs/network multiple times to reduce backlog and keep GekkoNet fed. */
+   {
+      unsigned loops = 0;
+      unsigned prev_pending = net_st->gekkonet_pending_runs;
+      do
+      {
+         netplay_gekkonet_push_local_input(net_st);
+         ra_gekkonet_update(&net_st->gekkonet);
 
-   ra_gekkonet_update(&net_st->gekkonet);
+         /* If new advances arrived, refresh inputs for the next iteration. */
+         if (net_st->gekkonet_pending_runs > prev_pending)
+            netplay_gekkonet_pack_inputs(net_st, &net_st->gekkonet_input);
+
+         prev_pending = net_st->gekkonet_pending_runs;
+      } while (net_st->gekkonet_pending_runs > 0 && loops++ < 8);
+   }
+
+   /* Client-side fast catch-up: if peer is connected but we didn't advance a frame,
+    * run a small burst of extra updates to close the gap. */
+   if ((net_st->flags & NET_DRIVER_ST_FLAG_NETPLAY_IS_CLIENT) &&
+       net_st->gekkonet_peer_connected &&
+       !net_st->gekkonet_has_frame)
+   {
+      unsigned extra = 6; /* small burst */
+      while (extra--)
+      {
+         netplay_gekkonet_pack_inputs(net_st, &net_st->gekkonet_input);
+         netplay_gekkonet_push_local_input(net_st);
+         ra_gekkonet_update(&net_st->gekkonet);
+      }
+   }
    /* Align with builtin netplay timing: let the main runloop decide if it should skip. */
    net_st->gekkonet_has_frame      = net_st->gekkonet.advanced_frame;
    net_st->gekkonet_frame_consumed = net_st->gekkonet_has_frame;
    net_st->gekkonet_running_frame  = false;
+
+   /* Log the current remote/local frame inputs when button state changes. */
+   {
+      settings_t *settings = config_get_ptr();
+      static bool frame_seen[MAX_USERS] = {false};
+      static uint32_t frame_last_buttons[MAX_USERS] = {0};
+      const ra_gekkonet_input_t *frame =
+         (const ra_gekkonet_input_t*)ra_gekkonet_get_current_input(
+               &net_st->gekkonet);
+      if (frame)
+      {
+         unsigned max_users = settings ? settings->uints.input_max_users : MAX_USERS;
+         if (max_users == 0 || max_users > MAX_USERS)
+            max_users = MAX_USERS;
+         unsigned limit_ports = max_users;
+         if (net_st->gekkonet.actor_count > 0 && net_st->gekkonet.actor_count < (int)limit_ports)
+            limit_ports = (unsigned)net_st->gekkonet.actor_count;
+         for (unsigned p = 0; p < limit_ports; p++)
+         {
+            const ra_gekkonet_pad_input_t *pad = &frame->players[p];
+            if (!frame_seen[p] || frame_last_buttons[p] != pad->buttons)
+            {
+               uint32_t delta = frame_seen[p] ? (frame_last_buttons[p] ^ pad->buttons) : pad->buttons;
+               frame_last_buttons[p] = pad->buttons;
+               frame_seen[p] = true;
+               RARCH_LOG("[GekkoNet][frame-input] port=%u buttons=0x%08X delta=0x%08X lx=%d ly=%d rx=%d ry=%d\n",
+                     p + 1,
+                     pad->buttons,
+                     delta,
+                     pad->analog_x[0], pad->analog_y[0],
+                     pad->analog_x[1], pad->analog_y[1]);
+            }
+         }
+      }
+   }
    return true;
 }
 
@@ -399,20 +787,112 @@ static bool netplay_gekkonet_init_session(net_driver_state_t *net_st,
    /* Default to a 2-player session (host + one remote). */
    unsigned max_players = 2;
    unsigned max_specs   = settings ? settings->uints.gekkonet_max_spectators : 0;
+   unsigned max_users   = settings ? settings->uints.input_max_users : MAX_USERS;
+   int requested_port   = netplay_gekkonet_requested_port(settings);
    size_t state_sz      = core_serialize_size();
+   unsigned short remote_port = (unsigned short)(port ? port :
+         (settings ? settings->uints.netplay_udp_port : RARCH_DEFAULT_PORT));
+   if (!remote_port)
+   {
+      remote_port = RARCH_DEFAULT_PORT;
+      RARCH_WARN("[GekkoNet] remote port not set; falling back to default %hu\n", remote_port);
+   }
+
+   if (max_users == 0 || max_users > MAX_USERS)
+      max_users = MAX_USERS;
 
    if (!state_sz)
    {
-      /* Deferred join/host before core is ready: fall back to 1 MiB so we don't abort init. */
-      state_sz = 1024 * 1024;
-      RARCH_WARN("[GekkoNet] core_serialize_size returned 0; using fallback state size=%zu bytes\n",
-            state_sz);
+      /* Core/content not ready yet. Defer GekkoNet start until we have a real serialize size. */
+      net_st->flags |= NET_DRIVER_ST_FLAG_GEKKONET_DEFERRED;
+      net_st->server_port_deferred = port;
+      if (server)
+         strlcpy(net_st->server_address_deferred, server,
+               sizeof(net_st->server_address_deferred));
+      else
+         net_st->server_address_deferred[0] = '\0';
+
+      RARCH_WARN("[GekkoNet] core_serialize_size is 0; deferring session start until core is ready.\n");
+      return true;
    }
 
    if (!core_set_default_callbacks(&net_st->gekkonet_cbs))
       return false;
    if (!core_set_netplay_callbacks())
       return false;
+
+   /* Preflight CRC so both sides can verify identical initial state. */
+   unsigned int preflight_crc = 0;
+   if (state_sz > 0)
+   {
+      void *tmp = malloc(state_sz);
+      if (tmp)
+      {
+         retro_ctx_serialize_info_t si = {0};
+         si.data = tmp;
+         si.size = state_sz;
+         if (core_serialize(&si))
+         {
+            unsigned int crc = 0xFFFFFFFFu;
+            const unsigned char *p = (const unsigned char*)tmp;
+            size_t i, j;
+            for (i = 0; i < si.size; i++)
+            {
+               crc ^= p[i];
+               for (j = 0; j < 8; j++)
+                  crc = (crc >> 1) ^ (0xEDB88320u & (-(int)(crc & 1)));
+            }
+            crc ^= 0xFFFFFFFFu;
+            preflight_crc = crc;
+            RARCH_LOG("[GekkoNet] preflight serialize size=%zu crc=%08X\n", si.size, crc);
+         }
+         free(tmp);
+      }
+   }
+
+   /* Optional: dump the current serialize buffer to a file for seeding future sessions.
+    * Set GEKKONET_DUMP_STATE to the desired output path. */
+   {
+      const char *dump_path = getenv("GEKKONET_DUMP_STATE");
+      if (dump_path && *dump_path && state_sz > 0)
+      {
+         void *buf = malloc(state_sz);
+         if (buf)
+         {
+            retro_ctx_serialize_info_t si = {0};
+            si.data = buf;
+            si.size = state_sz;
+            if (core_serialize(&si))
+            {
+               FILE *df = fopen(dump_path, "wb");
+               if (df)
+               {
+                  size_t wr = fwrite(buf, 1, state_sz, df);
+                  fclose(df);
+                  if (wr == state_sz)
+                  {
+                     unsigned int crc = 0xFFFFFFFFu;
+                     const unsigned char *p = (const unsigned char*)buf;
+                     size_t i, j;
+                     for (i = 0; i < si.size; i++)
+                     {
+                        crc ^= p[i];
+                        for (j = 0; j < 8; j++)
+                           crc = (crc >> 1) ^ (0xEDB88320u & (-(int)(crc & 1)));
+                     }
+                     crc ^= 0xFFFFFFFFu;
+                     RARCH_LOG("[GekkoNet] dumped init state to %s (size=%zu crc=%08X)\n", dump_path, state_sz, crc);
+                  }
+                  else
+                     RARCH_WARN("[GekkoNet] failed to fully write dump state (%zu/%zu) to %s\n", wr, state_sz, dump_path);
+               }
+               else
+                  RARCH_WARN("[GekkoNet] failed to open dump path %s for writing\n", dump_path);
+            }
+            free(buf);
+         }
+      }
+   }
 
    memset(&params, 0, sizeof(params));
    max_players = 2;
@@ -430,16 +910,38 @@ static bool netplay_gekkonet_init_session(net_driver_state_t *net_st,
    params.num_players             = (unsigned char)max_players;
    params.max_spectators          = (unsigned char)max_specs;
    params.input_prediction_window = settings ? settings->uints.gekkonet_input_prediction : 0;
+   /* Clamp to a sane minimum to avoid constant rollbacks/loads and stalls. */
+   if (params.input_prediction_window < 8)
+      params.input_prediction_window = 8;
+   /* Allow a wider prediction window for smoother startup; cap at 32. */
+   if (params.input_prediction_window < 16)
+      params.input_prediction_window = 16;
+   if (params.input_prediction_window > 32)
+      params.input_prediction_window = 32;
    params.spectator_delay         = settings ? settings->uints.gekkonet_spectator_delay : 0;
-   params.input_size              = sizeof(ra_gekkonet_input_t);
+   /* GekkoNet expects per-actor input size; use one pad, not the full frame blob. */
+   params.input_size              = sizeof(ra_gekkonet_pad_input_t);
    params.state_size              = (unsigned int)state_sz;
-   params.port                    = (unsigned short)(port ? port :
-         (settings ? settings->uints.netplay_udp_port : RARCH_DEFAULT_PORT));
-   params.limited_saving          = true; /* reduce per-frame save overhead */
+   /* Hosts bind the configured UDP port; clients bind ephemeral locally,
+    * but still target the remote host's advertised port. */
+   params.port                    = (unsigned short)(
+         (net_st->flags & NET_DRIVER_ST_FLAG_NETPLAY_IS_CLIENT)
+         ? 0
+         : remote_port);
+   /* Allow full saving to give GekkoNet more rollback checkpoints; limiting
+    * saves can cause deep rollbacks to snap back to the initial state. */
+   params.limited_saving          = false;
    params.post_sync_joining       = settings ? settings->bools.gekkonet_allow_late_join : false;
    params.desync_detection        = settings ? settings->bools.gekkonet_desync_detection : false;
 
    netplay_gekkonet_reset(net_st);
+
+   RARCH_LOG("[GekkoNet] init params: players=%u input_size=%u state_size=%u pred_win=%u port=%hu\n",
+         (unsigned)params.num_players,
+         (unsigned)params.input_size,
+         (unsigned)params.state_size,
+         (unsigned)params.input_prediction_window,
+         params.port);
 
    if (!params.num_players)
       params.num_players = 1;
@@ -460,23 +962,96 @@ static bool netplay_gekkonet_init_session(net_driver_state_t *net_st,
    ra_gekkonet_set_session_event_cb(&net_st->gekkonet,
          netplay_gekkonet_session_event_cb, NULL);
 
-   net_st->gekkonet_local_actor = ra_gekkonet_add_actor(
-         &net_st->gekkonet, LocalPlayer, NULL);
-   if (net_st->gekkonet_local_actor < 0)
+   /* Make actor handles deterministic across peers:
+    * Order must match so handle ids line up:
+   *   Host: add LocalPlayer first (handle 0), remote auto-add/explicit is handle 1.
+   *   Client: add RemotePlayer first (handle 0), then LocalPlayer (handle 1). */
+   if (net_st->flags & NET_DRIVER_ST_FLAG_NETPLAY_IS_CLIENT)
    {
-      netplay_gekkonet_reset(net_st);
-      return false;
-   }
+      int remote_handle = -1;
+      int local_port    = (requested_port >= 0 &&
+            requested_port < (int)max_users) ? requested_port : 1;
+      int host_port     = netplay_gekkonet_pick_other_port(max_users, local_port);
 
-   if (server && *server)
+      if (requested_port >= 0 && requested_port < (int)max_users)
+      {
+         RARCH_LOG("[GekkoNet] honoring menu device request: local uses port %d\n",
+               local_port + 1);
+      }
+      /* Client: add remote host first so handles line up (host is handle 0). */
+      if (server && *server)
+      {
+         char addr[96];
+         snprintf(addr, sizeof(addr), "%s:%hu", server, remote_port);
+         remote_handle = ra_gekkonet_add_actor(&net_st->gekkonet, RemotePlayer, addr);
+         RARCH_LOG("[GekkoNet] add remote actor %s handle=%d\n", addr, remote_handle);
+         if (remote_handle < 0)
+            RARCH_WARN("[GekkoNet] Failed to add remote actor for %s\n", addr);
+      }
+      else
+      {
+         remote_handle = ra_gekkonet_add_actor(&net_st->gekkonet, RemotePlayer, NULL);
+         RARCH_LOG("[GekkoNet] add remote actor (auto) handle=%d\n", remote_handle);
+      }
+
+      /* Now add local player (handle 1). */
+      net_st->gekkonet_local_actor = ra_gekkonet_add_actor(
+            &net_st->gekkonet, LocalPlayer, NULL);
+      if (net_st->gekkonet_local_actor < 0)
+      {
+         netplay_gekkonet_reset(net_st);
+         return false;
+      }
+
+      /* Map ports: host (remote) uses requested/default port, local uses first other. */
+      if (remote_handle >= 0)
+         ra_gekkonet_set_actor_port(&net_st->gekkonet, remote_handle, host_port);
+      ra_gekkonet_set_actor_port(&net_st->gekkonet,
+            net_st->gekkonet_local_actor, local_port);
+      RARCH_LOG("[GekkoNet] client actors: remote_handle=%d -> port%d, local_handle=%d -> port%d\n",
+            remote_handle, host_port + 1,
+            net_st->gekkonet_local_actor, local_port + 1);
+   }
+   else
    {
-      char addr[96];
-      snprintf(addr, sizeof(addr), "%s:%hu", server,
-            params.port);
-      int remote = ra_gekkonet_add_actor(&net_st->gekkonet, RemotePlayer, addr);
-      RARCH_LOG("[GekkoNet] add remote actor %s handle=%d\n", addr, remote);
-      if (remote < 0)
-         RARCH_WARN("[GekkoNet] Failed to add remote actor for %s\n", addr);
+      int remote_handle = -1;
+      int local_port    = (requested_port >= 0 &&
+            requested_port < (int)max_users) ? requested_port : 0;
+      int mapped_remote = netplay_gekkonet_pick_other_port(max_users, local_port);
+
+      if (requested_port >= 0 && requested_port < (int)max_users)
+      {
+         RARCH_LOG("[GekkoNet] honoring menu device request: host uses port %d\n",
+               local_port + 1);
+      }
+      /* Host: add local first; remote is handle 1 when added. */
+      net_st->gekkonet_local_actor = ra_gekkonet_add_actor(
+            &net_st->gekkonet, LocalPlayer, NULL);
+      if (net_st->gekkonet_local_actor < 0)
+      {
+         netplay_gekkonet_reset(net_st);
+         return false;
+      }
+
+      /* Host local maps to requested port (default: RetroPad port 1/index 0). */
+      ra_gekkonet_set_actor_port(&net_st->gekkonet,
+            net_st->gekkonet_local_actor, local_port);
+
+      /* If host knows the client's address (direct connect), add remote now; otherwise wait for auto-add. */
+      if (server && *server)
+      {
+         remote_handle = ra_gekkonet_add_actor(&net_st->gekkonet, RemotePlayer, server);
+         RARCH_LOG("[GekkoNet] add remote actor %s handle=%d\n", server, remote_handle);
+         if (remote_handle >= 0)
+            ra_gekkonet_set_actor_port(&net_st->gekkonet, remote_handle, mapped_remote);
+      }
+      else
+      {
+         RARCH_LOG("[GekkoNet] host will auto-add remote actor on first packet\n");
+      }
+
+      RARCH_LOG("[GekkoNet] host actors: local_handle=%d -> port%d (remote -> port%d when connected)\n",
+            net_st->gekkonet_local_actor, local_port + 1, mapped_remote + 1);
    }
 
    if (settings && settings->uints.gekkonet_local_delay)
@@ -484,10 +1059,24 @@ static bool netplay_gekkonet_init_session(net_driver_state_t *net_st,
             net_st->gekkonet_local_actor,
             (unsigned char)settings->uints.gekkonet_local_delay);
 
+   /* Configure TCP snapshot channel (host listens, client connects). */
+   ra_gekkonet_set_tcp_params(&net_st->gekkonet,
+         (net_st->flags & NET_DRIVER_ST_FLAG_NETPLAY_IS_CLIENT) ? true : false,
+         server,
+         remote_port);
+
    net_st->gekkonet_active = true;
    net_st->backend         = NETPLAY_BACKEND_GEKKONET;
    RARCH_LOG("[GekkoNet] session init complete (players=%u, bound_port=%hu)\n",
          (unsigned)params.num_players, net_st->gekkonet.bound_port);
+   RARCH_LOG("[GekkoNet] local_actor=%d\n", net_st->gekkonet_local_actor);
+   /* Dump handle->port map for diagnostics. */
+   for (int i = 0; i < net_st->gekkonet.actor_count; i++)
+   {
+      RARCH_LOG("[GekkoNet] actor[%d] handle=%d port=%d\n",
+            i, net_st->gekkonet.actor_handles[i],
+            net_st->gekkonet.actor_ports[i]);
+   }
    if (net_st->flags & NET_DRIVER_ST_FLAG_NETPLAY_IS_CLIENT)
       RARCH_LOG("[GekkoNet] acting as client\n");
    else
@@ -2539,6 +3128,11 @@ static netplay_input_state_t netplay_input_state_for(
 static uint32_t netplay_expected_input_size(netplay_t *netplay,
       uint32_t devices)
 {
+   net_driver_state_t *net_st = networking_state_get_ptr();
+
+   if (netplay_backend_is_gekkonet(net_st))
+      return (uint32_t)(sizeof(ra_gekkonet_pad_input_t) / sizeof(uint32_t));
+
    uint32_t ret = 0, device;
    NETPLAY_ASSERT_MODUS(NETPLAY_MODUS_INPUT_FRAME_SYNC);
 
@@ -9480,6 +10074,33 @@ bool init_netplay_gekkonet(const char *server, unsigned port, const char *mitm_s
       net_st->flags |= NET_DRIVER_ST_FLAG_NETPLAY_IS_CLIENT;
    else
       net_st->flags &= ~NET_DRIVER_ST_FLAG_NETPLAY_IS_CLIENT;
+
+   return true;
+}
+
+/* Called from runloop to start a deferred GekkoNet session once the core is ready. */
+bool netplay_gekkonet_resume_deferred(net_driver_state_t *net_st)
+{
+   if (!net_st)
+      return false;
+
+   if (!(net_st->flags & NET_DRIVER_ST_FLAG_GEKKONET_DEFERRED))
+      return false;
+
+   if (!core_serialize_size())
+      return false;
+
+   /* Clear the deferred flag before attempting init to avoid loops. */
+   net_st->flags &= ~NET_DRIVER_ST_FLAG_GEKKONET_DEFERRED;
+
+   if (!netplay_gekkonet_init_session(net_st,
+         net_st->server_address_deferred[0] ? net_st->server_address_deferred : NULL,
+         net_st->server_port_deferred))
+   {
+      RARCH_ERR("[GekkoNet] Deferred init failed; disabling netplay.\n");
+      net_st->flags &= ~(NET_DRIVER_ST_FLAG_NETPLAY_ENABLED | NET_DRIVER_ST_FLAG_NETPLAY_IS_CLIENT);
+      return false;
+   }
 
    return true;
 }

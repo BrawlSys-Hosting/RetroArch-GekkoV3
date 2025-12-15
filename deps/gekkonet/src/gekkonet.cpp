@@ -1,6 +1,16 @@
 #include "gekkonet.h"
 #include "gekko.h"
 
+// Trace helpers
+#ifndef GEKKONET_TRACE
+#define GEKKONET_TRACE 0
+#endif
+#ifndef GEKKONET_TRACE_LOG
+#include <iostream>
+#define GEKKONET_TRACE_LOG(msg) \
+    do { if (GEKKONET_TRACE) { std::cerr << "[gekkonet] " << msg << std::endl; } } while (0)
+#endif
+
 bool gekko_create(GekkoSession** session)
 {
     if (*session) {
@@ -28,6 +38,7 @@ void gekko_start(GekkoSession* session, GekkoConfig* config)
 
 void gekko_net_adapter_set(GekkoSession* session, GekkoNetAdapter* adapter)
 {
+    GEKKONET_TRACE_LOG("SetNetAdapter adapter=" << (void*)adapter);
     session->SetNetAdapter(adapter);
 }
 
@@ -71,6 +82,30 @@ void gekko_network_poll(GekkoSession* session)
     session->NetworkPoll();
 }
 
+bool gekko_send_snapshot(GekkoSession* session,
+                         const void* data,
+                         unsigned int size,
+                         unsigned int crc,
+                         int frame)
+{
+    if (!session || !data || size == 0)
+        return false;
+    session->QueueSnapshotPush((const u8*)data, size, crc, frame);
+    return true;
+}
+
+bool gekko_queue_snapshot_apply(GekkoSession* session,
+                                const void* data,
+                                unsigned int size,
+                                unsigned int crc,
+                                int frame)
+{
+    if (!session || !data || size == 0)
+        return false;
+    session->QueueSnapshotApply((const u8*)data, size, crc, frame);
+    return true;
+}
+
 #ifndef GEKKONET_NO_ASIO
 
 #ifdef _WIN32
@@ -110,6 +145,11 @@ static void asio_send(GekkoNetAddress* addr, const char* data, int length) {
     auto endpoint = STOE(address);
 
     _socket->send_to(asio::buffer(data, length), endpoint, 0, _ec);
+    /* Throttle send logging: first few packets, then every 60th. */
+    static unsigned send_tick = 0;
+    if (send_tick < 4 || (send_tick % 60) == 0)
+        GEKKONET_TRACE_LOG("send " << length << " bytes to " << address);
+    send_tick++;
 
     if (_ec) {
         std::cerr << "send failed: " << _ec.message() << std::endl;
@@ -139,6 +179,8 @@ static GekkoNetResult** asio_receive(int* length) {
             res->data = std::malloc(len);
 
             std::memcpy(res->data, _buffer, len);
+
+            GEKKONET_TRACE_LOG("recv " << len << " bytes from " << endpoint);
         }
         else {
             break;
