@@ -226,6 +226,60 @@ static bool netplay_backend_is_gekkonet(const net_driver_state_t *net_st)
    return net_st && net_st->backend == NETPLAY_BACKEND_GEKKONET && net_st->gekkonet_active;
 }
 
+/* Testing helper: allow host to run solo without a peer when GEKKONET_ALLOW_SOLO is set. */
+static bool netplay_gekkonet_allow_solo(void)
+{
+   static int cached = -1;
+   if (cached < 0)
+   {
+      const char *env = getenv("GEKKONET_ALLOW_SOLO");
+      cached = (env && *env) ? 1 : 0;
+   }
+   return cached == 1;
+}
+
+/* Testing helper: mirror local pad to all ports. */
+static bool netplay_gekkonet_mirror_local(void)
+{
+   static int cached = -1;
+   if (cached < 0)
+   {
+      const char *env = getenv("GEKKONET_MIRROR_LOCAL");
+      cached = (env && *env) ? 1 : 0;
+   }
+   return cached == 1;
+}
+
+/* Testing helper: inject a held button when set. */
+static bool netplay_gekkonet_force_test_input(void)
+{
+   static int cached = -1;
+   if (cached < 0)
+   {
+      const char *env = getenv("GEKKONET_FORCE_TEST_INPUT");
+      cached = (env && *env) ? 1 : 0;
+   }
+   return cached == 1;
+}
+
+/* Testing helper: bypass GekkoNet frames and feed local pad directly. */
+static bool netplay_gekkonet_force_local_pad(void)
+{
+   static int cached = -1;
+   if (cached < 0)
+   {
+      const char *env = getenv("GEKKONET_FORCE_LOCAL_PAD");
+      cached = (env && *env) ? 1 : 0;
+   }
+   return cached == 1;
+}
+
+#if defined(HAVE_NETPLAYDISCOVERY) && !defined(VITA)
+static bool netplay_lan_ad_server(uint16_t advert_port, const char *advert_nick);
+static bool init_lan_ad_server_socket(void);
+static void deinit_lan_ad_server_socket(void);
+#endif
+
 /* Inspect the netplay request-device toggles (exposed in the menu) and
  * return the first requested port index, or -1 if none are set. */
 static int netplay_gekkonet_requested_port(const settings_t *settings)
@@ -464,12 +518,9 @@ static void netplay_gekkonet_pack_inputs(net_driver_state_t *net_st,
    if (max_users == 0 || max_users > MAX_USERS)
       max_users = MAX_USERS;
 
-   /* Prefer actual actor mappings if we have them to avoid touching every port unnecessarily. */
-   unsigned limit_ports = max_users;
-   if (net_st->gekkonet.actor_count > 0 && net_st->gekkonet.actor_count < (int)limit_ports)
-      limit_ports = (unsigned)net_st->gekkonet.actor_count;
-
-   for (port = 0; port < limit_ports; port++)
+   /* Collect inputs for all available ports; unmapped ports will still fall back
+    * to local pads in input_state_net when needed. */
+   for (port = 0; port < max_users; port++)
    {
       unsigned id;
       ra_gekkonet_pad_input_t *pad = &out->players[port];
@@ -517,6 +568,42 @@ static void netplay_gekkonet_pack_inputs(net_driver_state_t *net_st,
                pad->analog_x[1], pad->analog_y[1]);
       }
    }
+
+   /* Optional: mirror the first local pad across all ports for testing/debugging. */
+   if (netplay_gekkonet_mirror_local())
+   {
+      int source_port = 0;
+      for (int i = 0; i < net_st->gekkonet.actor_count; i++)
+      {
+         if (net_st->gekkonet.actor_handles[i] == net_st->gekkonet_local_actor &&
+             net_st->gekkonet.actor_ports[i] >= 0 &&
+             net_st->gekkonet.actor_ports[i] < (int)max_users)
+         {
+            source_port = net_st->gekkonet.actor_ports[i];
+            break;
+         }
+      }
+      for (port = 0; port < max_users; port++)
+         out->players[port] = out->players[source_port];
+      RARCH_LOG("[GekkoNet] GEKKONET_MIRROR_LOCAL enabled; mirroring port%d to all\n", source_port + 1);
+   }
+
+   /* Optional: inject a rapid D-pad down press for end-to-end verification. */
+   if (netplay_gekkonet_force_test_input())
+   {
+      static unsigned test_tick = 0;
+      const uint32_t test_btn = (1U << RETRO_DEVICE_ID_JOYPAD_DOWN);
+      bool pressed = ((test_tick++) & 1) == 0; /* toggle every pack */
+      for (port = 0; port < max_users; port++)
+      {
+         if (pressed)
+            out->players[port].buttons |= test_btn;
+         else
+            out->players[port].buttons &= ~test_btn;
+      }
+      RARCH_LOG("[GekkoNet] GEKKONET_FORCE_TEST_INPUT enabled; rapid D-pad down on all ports (state=%s)\n",
+            pressed ? "down" : "up");
+   }
 }
 
 static void netplay_gekkonet_push_local_input(net_driver_state_t *net_st)
@@ -557,6 +644,7 @@ static void netplay_gekkonet_push_local_input(net_driver_state_t *net_st)
 
 static bool netplay_gekkonet_frame(net_driver_state_t *net_st)
 {
+   const bool allow_solo = netplay_gekkonet_allow_solo();
    static bool logged_frame_entry = false;
    if (!netplay_backend_is_gekkonet(net_st))
       return false;
@@ -566,6 +654,17 @@ static bool netplay_gekkonet_frame(net_driver_state_t *net_st)
    {
       if (!net_st->gekkonet_peer_connected)
       {
+         if (allow_solo)
+         {
+            /* Testing-only: let host run without waiting for a peer. */
+            net_st->gekkonet_peer_connected = true;
+            if (net_st->gekkonet_host_paused)
+            {
+               net_st->gekkonet_host_paused = false;
+               RARCH_WARN("[GekkoNet] GEKKONET_ALLOW_SOLO enabled; running without peer\n");
+            }
+         }
+
          ra_gekkonet_update(&net_st->gekkonet); /* keep network poll alive */
          if (!net_st->gekkonet_host_paused)
          {
@@ -578,6 +677,17 @@ static bool netplay_gekkonet_frame(net_driver_state_t *net_st)
          net_st->gekkonet_host_paused = false;
          RARCH_LOG("[GekkoNet] peer connected; resuming core\n");
       }
+
+#if defined(HAVE_NETPLAYDISCOVERY) && !defined(VITA)
+      if (net_st->gekkonet.bound_port)
+      {
+         const settings_t *settings = config_get_ptr();
+         const char *nick = settings ? settings->paths.username : NULL;
+
+         if (net_st->lan_ad_server_fd >= 0 || init_lan_ad_server_socket())
+            netplay_lan_ad_server(net_st->gekkonet.bound_port, nick);
+      }
+#endif
    }
 
    /* One-time deferred init-state load (after core is fully up). */
@@ -710,6 +820,14 @@ static bool netplay_gekkonet_frame(net_driver_state_t *net_st)
    {
       unsigned loops = 0;
       unsigned prev_pending = net_st->gekkonet_pending_runs;
+      if (allow_solo && !net_st->gekkonet_peer_connected)
+      {
+         /* Solo mode: don't wait on network advances; just mark a frame ready. */
+         netplay_gekkonet_pack_inputs(net_st, &net_st->gekkonet_input);
+         netplay_gekkonet_push_local_input(net_st);
+         net_st->gekkonet.advanced_frame = true;
+         net_st->gekkonet_pending_runs   = 0;
+      }
       do
       {
          netplay_gekkonet_push_local_input(net_st);
@@ -738,6 +856,8 @@ static bool netplay_gekkonet_frame(net_driver_state_t *net_st)
       }
    }
    /* Align with builtin netplay timing: let the main runloop decide if it should skip. */
+   if (allow_solo && !net_st->gekkonet_peer_connected)
+      net_st->gekkonet.advanced_frame = true;
    net_st->gekkonet_has_frame      = net_st->gekkonet.advanced_frame;
    net_st->gekkonet_frame_consumed = net_st->gekkonet_has_frame;
    net_st->gekkonet_running_frame  = false;
@@ -896,6 +1016,15 @@ static bool netplay_gekkonet_init_session(net_driver_state_t *net_st,
 
    memset(&params, 0, sizeof(params));
    max_players = 2;
+   /* Testing helper: allow fully local solo sessions when hosting and the env is set. */
+   if (!(net_st->flags & NET_DRIVER_ST_FLAG_NETPLAY_IS_CLIENT) &&
+       netplay_gekkonet_allow_solo() &&
+       (!server || !*server))
+   {
+      max_players = 1;
+      max_specs   = 0;
+      RARCH_LOG("[GekkoNet] GEKKONET_ALLOW_SOLO set; starting 1-player local session\n");
+   }
    if (max_players > MAX_USERS)
       max_players = MAX_USERS;
    if (max_specs > UINT8_MAX)
@@ -946,6 +1075,7 @@ static bool netplay_gekkonet_init_session(net_driver_state_t *net_st,
    if (!params.num_players)
       params.num_players = 1;
 
+   /* Solo host: do not pre-add a remote actor. */
    if (!ra_gekkonet_init(&net_st->gekkonet, &params,
             netplay_gekkonet_save_state_cb,
             netplay_gekkonet_load_state_cb))
@@ -970,7 +1100,7 @@ static bool netplay_gekkonet_init_session(net_driver_state_t *net_st,
    {
       int remote_handle = -1;
       int local_port    = (requested_port >= 0 &&
-            requested_port < (int)max_users) ? requested_port : 1;
+            requested_port < (int)max_users) ? requested_port : 0;
       int host_port     = netplay_gekkonet_pick_other_port(max_users, local_port);
 
       if (requested_port >= 0 && requested_port < (int)max_users)
@@ -1012,7 +1142,7 @@ static bool netplay_gekkonet_init_session(net_driver_state_t *net_st,
             remote_handle, host_port + 1,
             net_st->gekkonet_local_actor, local_port + 1);
    }
-   else
+   else /* host */
    {
       int remote_handle = -1;
       int local_port    = (requested_port >= 0 &&
@@ -1024,7 +1154,8 @@ static bool netplay_gekkonet_init_session(net_driver_state_t *net_st,
          RARCH_LOG("[GekkoNet] honoring menu device request: host uses port %d\n",
                local_port + 1);
       }
-      /* Host: add local first; remote is handle 1 when added. */
+      /* Host: add local first; remote is handle 1 when added.
+       * In solo mode (num_players==1) we skip adding a remote entirely. */
       net_st->gekkonet_local_actor = ra_gekkonet_add_actor(
             &net_st->gekkonet, LocalPlayer, NULL);
       if (net_st->gekkonet_local_actor < 0)
@@ -1037,21 +1168,29 @@ static bool netplay_gekkonet_init_session(net_driver_state_t *net_st,
       ra_gekkonet_set_actor_port(&net_st->gekkonet,
             net_st->gekkonet_local_actor, local_port);
 
-      /* If host knows the client's address (direct connect), add remote now; otherwise wait for auto-add. */
-      if (server && *server)
+      if (params.num_players > 1)
       {
-         remote_handle = ra_gekkonet_add_actor(&net_st->gekkonet, RemotePlayer, server);
-         RARCH_LOG("[GekkoNet] add remote actor %s handle=%d\n", server, remote_handle);
-         if (remote_handle >= 0)
-            ra_gekkonet_set_actor_port(&net_st->gekkonet, remote_handle, mapped_remote);
+         /* If host knows the client's address (direct connect), add remote now; otherwise wait for auto-add. */
+         if (server && *server)
+         {
+            remote_handle = ra_gekkonet_add_actor(&net_st->gekkonet, RemotePlayer, server);
+            RARCH_LOG("[GekkoNet] add remote actor %s handle=%d\n", server, remote_handle);
+            if (remote_handle >= 0)
+               ra_gekkonet_set_actor_port(&net_st->gekkonet, remote_handle, mapped_remote);
+         }
+         else
+         {
+            RARCH_LOG("[GekkoNet] host will auto-add remote actor on first packet\n");
+         }
+
+         RARCH_LOG("[GekkoNet] host actors: local_handle=%d -> port%d (remote -> port%d when connected)\n",
+               net_st->gekkonet_local_actor, local_port + 1, mapped_remote + 1);
       }
       else
       {
-         RARCH_LOG("[GekkoNet] host will auto-add remote actor on first packet\n");
+         RARCH_LOG("[GekkoNet] host solo mode: only local actor (handle=%d) on port%d\n",
+               net_st->gekkonet_local_actor, local_port + 1);
       }
-
-      RARCH_LOG("[GekkoNet] host actors: local_handle=%d -> port%d (remote -> port%d when connected)\n",
-            net_st->gekkonet_local_actor, local_port + 1, mapped_remote + 1);
    }
 
    if (settings && settings->uints.gekkonet_local_delay)
@@ -1090,6 +1229,9 @@ static void netplay_gekkonet_deinit_session(net_driver_state_t *net_st)
       return;
 
    ra_gekkonet_deinit(&net_st->gekkonet);
+#if defined(HAVE_NETPLAYDISCOVERY) && !defined(VITA)
+   deinit_lan_ad_server_socket();
+#endif
    netplay_gekkonet_reset(net_st);
    net_st->backend = NETPLAY_BACKEND_BUILTIN;
    core_unset_netplay_callbacks();
@@ -1403,7 +1545,7 @@ static void deinit_lan_ad_server_socket(void)
  *
  * Respond to any LAN ad queries that the netplay server has received.
  */
-static bool netplay_lan_ad_server(netplay_t *netplay)
+static bool netplay_lan_ad_server(uint16_t advert_port, const char *advert_nick)
 {
    uint32_t header;
    struct sockaddr_storage their_addr = {0};
@@ -1449,13 +1591,19 @@ static bool netplay_lan_ad_server(netplay_t *netplay)
       if (!ipv4_is_lan_address((struct sockaddr_in*)&their_addr))
          return true;
 
+      if (!advert_port)
+         return true;
+
       RARCH_LOG("[Discovery] Query received on LAN interface.\n");
 
       /* Now build our response */
       ad_packet_buffer.header = htonl(DISCOVERY_RESPONSE_MAGIC);
-      ad_packet_buffer.port   = (int32_t)htonl(netplay->tcp_port);
+      ad_packet_buffer.port   = (int32_t)htonl(advert_port);
 
-      strlcpy(ad_packet_buffer.nick, netplay->nick,
+      if (!advert_nick || string_is_empty(advert_nick))
+         advert_nick = RARCH_DEFAULT_NICK;
+
+      strlcpy(ad_packet_buffer.nick, advert_nick,
          sizeof(ad_packet_buffer.nick));
 
       frontend_drv = (const frontend_ctx_driver_t*)
@@ -9794,12 +9942,56 @@ int16_t input_state_net(unsigned port, unsigned device,
 
    if (netplay_backend_is_gekkonet(net_st))
    {
+      /* If this RetroPad port is owned by the local actor, trust the live
+       * local pad instead of the network frame. */
+      if (net_st->gekkonet_local_actor >= 0)
+      {
+         for (int i = 0; i < net_st->gekkonet.actor_count; i++)
+         {
+            if (net_st->gekkonet.actor_handles[i] == net_st->gekkonet_local_actor &&
+                net_st->gekkonet.actor_ports[i] == (int)port &&
+                net_st->gekkonet_cbs.state_cb)
+               return net_st->gekkonet_cbs.state_cb(port, device, idx, id);
+         }
+      }
+
+      /* When explicitly forcing test input, short-circuit and present a
+       * constant D-pad down press to the core. */
+      if (netplay_gekkonet_force_test_input())
+      {
+         if (device == RETRO_DEVICE_JOYPAD)
+         {
+            if (id == RETRO_DEVICE_ID_JOYPAD_DOWN)
+               return 1;
+            return 0;
+         }
+      }
+
+      /* Optional escape hatch: ignore GekkoNet frames and return local pad
+       * directly for all ports (for debugging input plumbing). */
+      if (netplay_gekkonet_force_local_pad() && net_st->gekkonet_cbs.state_cb)
+         return net_st->gekkonet_cbs.state_cb(port, device, idx, id);
+
       const ra_gekkonet_input_t *frame =
          (const ra_gekkonet_input_t*)ra_gekkonet_get_current_input(
                &net_st->gekkonet);
 
+      if ((!frame || port >= MAX_USERS) && net_st->gekkonet_cbs.state_cb)
+         /* Fallback to immediate local input when GekkoNet has no
+          * current frame yet (e.g., before peer connect). */
+         return net_st->gekkonet_cbs.state_cb(port, device, idx, id);
       if (!frame || port >= MAX_USERS)
          return 0;
+
+      /* If this port is not mapped to any actor yet, treat it as local. */
+      {
+         bool mapped = false;
+         for (int i = 0; i < net_st->gekkonet.actor_count; i++)
+            if (net_st->gekkonet.actor_ports[i] == (int)port)
+               mapped = true;
+         if (!mapped && net_st->gekkonet_cbs.state_cb)
+            return net_st->gekkonet_cbs.state_cb(port, device, idx, id);
+      }
 
       if (device == RETRO_DEVICE_JOYPAD)
       {
@@ -9897,7 +10089,7 @@ static bool netplay_pre_frame(netplay_t *netplay)
 
          /* Advertise our server */
          if (net_st->lan_ad_server_fd >= 0 || init_lan_ad_server_socket())
-            netplay_lan_ad_server(netplay);
+            netplay_lan_ad_server((uint16_t)netplay->tcp_port, netplay->nick);
       }
 #endif
 
@@ -10029,6 +10221,9 @@ bool init_netplay_gekkonet(const char *server, unsigned port, const char *mitm_s
    net_driver_state_t *net_st = &networking_driver_st;
    settings_t *settings       = config_get_ptr();
    (void)mitm_session;
+#ifdef HAVE_NETPLAYDISCOVERY
+   deinit_lan_ad_server_socket();
+#endif
 
    /* Resolve server from settings if not provided. */
    if (!server || !*server)

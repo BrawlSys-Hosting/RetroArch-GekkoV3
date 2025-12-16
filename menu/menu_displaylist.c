@@ -9213,6 +9213,7 @@ unsigned menu_displaylist_build_list(
                {MENU_ENUM_LABEL_GEKKONET_DESYNC_DETECTION,          PARSE_ONLY_BOOL,   true},
                {MENU_ENUM_LABEL_GEKKONET_LIMITED_SAVING,            PARSE_ONLY_BOOL,   true},
                {MENU_ENUM_LABEL_GEKKONET_ALLOW_LATE_JOIN,           PARSE_ONLY_BOOL,   true},
+               {MENU_ENUM_LABEL_GEKKONET_GAMEPAD_MAPPING,           PARSE_ACTION,      true},
             };
 
             for (i = 0; i < ARRAY_SIZE(build_list); i++)

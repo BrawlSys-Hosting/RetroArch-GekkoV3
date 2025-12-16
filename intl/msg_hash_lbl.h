@@ -2531,6 +2531,10 @@ MSG_HASH(
    "gekkonet_allow_late_join"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_GEKKONET_GAMEPAD_MAPPING,
+   "gekkonet_gamepad_mapping"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_NETPLAY_INPUT_LATENCY_FRAMES_MIN,
    "netplay_input_latency_frames_min"
    )

@@ -2555,6 +2555,37 @@ static int setting_action_ok_bind_all(rarch_setting_t *setting,
    return 0;
 }
 
+#if defined(HAVE_NETWORKING)
+static unsigned menu_gekkonet_preferred_user(const settings_t *settings)
+{
+   unsigned max_users = settings ? settings->uints.input_max_users : MAX_USERS;
+
+   if (max_users == 0 || max_users > MAX_USERS)
+      max_users = MAX_USERS;
+
+   if (settings)
+   {
+      unsigned i;
+
+      for (i = 0; i < max_users; i++)
+         if (settings->bools.netplay_request_devices[i])
+            return i;
+   }
+
+   return 0;
+}
+
+static int setting_action_ok_gekkonet_bind_all(
+      rarch_setting_t *setting, size_t idx, bool wraparound)
+{
+   settings_t *settings = config_get_ptr();
+
+   /* Bind all controls for the preferred GekkoNet local player. */
+   setting->index_offset = menu_gekkonet_preferred_user(settings);
+   return setting_action_ok_bind_all(setting, idx, wraparound);
+}
+#endif
+
 #ifdef HAVE_CONFIGFILE
 static int setting_action_ok_bind_all_save_autoconfig(
       rarch_setting_t *setting, size_t idx, bool wraparound)
@@ -23399,6 +23430,15 @@ static bool setting_append_list(
                   general_read_handler,
                   SD_FLAG_NONE);
             SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ADVANCED);
+
+            CONFIG_ACTION(
+                  list, list_info,
+                  MENU_ENUM_LABEL_GEKKONET_GAMEPAD_MAPPING,
+                  MENU_ENUM_LABEL_VALUE_GEKKONET_GAMEPAD_MAPPING,
+                  &group_info,
+                  &subgroup_info,
+                  parent_group);
+            (*list)[list_info->index - 1].action_ok = &setting_action_ok_gekkonet_bind_all;
 
             CONFIG_UINT(
                   list, list_info,

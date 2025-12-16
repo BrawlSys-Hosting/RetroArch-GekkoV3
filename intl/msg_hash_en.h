@@ -1226,6 +1226,18 @@ MSG_HASH(
    "Permit players to join after the session has started syncing."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_GEKKONET_GAMEPAD_MAPPING,
+   "GekkoNet Gamepad Mapping"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_GEKKONET_GAMEPAD_MAPPING,
+   "GekkoNet Gamepad Mapping"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_GEKKONET_GAMEPAD_MAPPING,
+   "Bind all controls for the local GekkoNet player (uses your requested netplay device; defaults to User 1)."
+   )
+MSG_HASH(
    MENU_ENUM_SUBLABEL_NETPLAY_ALLOW_PAUSING,
    "Allow players to pause during net-play."
    )
