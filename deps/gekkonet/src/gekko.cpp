@@ -688,7 +688,8 @@ void Gekko::Session::HandleReceivedInputs()
         for (u32 i = 0; i < handles; i++) {
             Handle handle = spectating ? i : current->handles[i];
             for (u32 j = 1; j <= count; j++) {
-                Frame frame = start + j;
+                /* Frame must align with the input payload; j==1 corresponds to start. */
+                Frame frame = start + (Frame)j - 1;
                 u8* input = &current->input.inputs[(player_offset * i) + ((j - 1) * _config.input_size)];
                 _sync.AddRemoteInput(handle, input, frame);
                 // Debug: confirm remote input ingestion and last-received frame (throttled)
