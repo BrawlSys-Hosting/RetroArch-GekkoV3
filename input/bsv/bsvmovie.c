@@ -38,8 +38,8 @@
 #include <zlib.h>
 #endif
 
-#ifdef HAVE_ZSTD
-#include <zstd.h>
+#ifdef HAVE_LZ4
+#include <lz4.h>
 #endif
 
 #define BSV_IFRAME_START_TOKEN 0x00
@@ -600,10 +600,10 @@ bool bsv_movie_load_checkpoint(bsv_movie_t *handle, uint8_t compression,
             break;
          }
 #endif
-#ifdef HAVE_ZSTD
-      case REPLAY_CHECKPOINT2_COMPRESSION_ZSTD:
+#ifdef HAVE_LZ4
+      case REPLAY_CHECKPOINT2_COMPRESSION_LZ4:
          {
-            size_t uncompressed_size_big;
+            int decoded_size;
             /* TODO: figure out how to support in-place decompression to
                avoid allocating a second buffer; would need to allocate
                the compressed_data buffer to be decompressed size +
@@ -611,13 +611,16 @@ bool bsv_movie_load_checkpoint(bsv_movie_t *handle, uint8_t compression,
                calling the function that takes the compressed frames as
                an input?  */
             encoded_data          = (uint8_t*)calloc(encoded_size, sizeof(uint8_t));
-            uncompressed_size_big = ZSTD_decompress(encoded_data, encoded_size,
-                  compressed_data, compressed_encoded_size);
-            if (ZSTD_isError(uncompressed_size_big))
-               {
-                  ret = false;
-                  goto exit;
-               }
+            decoded_size = LZ4_decompress_safe(
+                  (const char*)compressed_data,
+                  (char*)encoded_data,
+                  (int)compressed_encoded_size,
+                  (int)encoded_size);
+            if (decoded_size < 0 || (uint32_t)decoded_size != encoded_size)
+            {
+               ret = false;
+               goto exit;
+            }
             break;
          }
 #endif
@@ -732,20 +735,24 @@ int64_t bsv_movie_write_checkpoint(bsv_movie_t *handle, uint8_t compression, uin
          break;
       }
 #endif
-#ifdef HAVE_ZSTD
-      case REPLAY_CHECKPOINT2_COMPRESSION_ZSTD:
+#ifdef HAVE_LZ4
+      case REPLAY_CHECKPOINT2_COMPRESSION_LZ4:
       {
-         size_t compressed_encoded_size_zstd = ZSTD_compressBound(encoded_size);
-         compressed_encoded_data = (uint8_t*)calloc(compressed_encoded_size_zstd, sizeof(uint8_t));
+         int compressed_encoded_size_lz4 = LZ4_compressBound((int)encoded_size);
+         compressed_encoded_data = (uint8_t*)calloc(compressed_encoded_size_lz4, sizeof(uint8_t));
          owns_compressed_encoded = true;
-         compressed_encoded_size_zstd = ZSTD_compress(compressed_encoded_data, compressed_encoded_size_zstd, encoded_data, encoded_size, 3);
-         if (ZSTD_isError(compressed_encoded_size_zstd))
+         compressed_encoded_size_lz4 = LZ4_compress_default(
+               (const char*)encoded_data,
+               (char*)compressed_encoded_data,
+               (int)encoded_size,
+               compressed_encoded_size_lz4);
+         if (compressed_encoded_size_lz4 <= 0)
          {
             ret = -1;
             goto exit;
          }
          /* Have to cast after checking the error flags, not before */
-         compressed_encoded_size = (uint32_t)compressed_encoded_size_zstd;
+         compressed_encoded_size = (uint32_t)compressed_encoded_size_lz4;
          break;
       }
 #endif

@@ -130,7 +130,9 @@
 /* Which compression codec to use. */
 #define REPLAY_CHECKPOINT2_COMPRESSION_NONE 0
 #define REPLAY_CHECKPOINT2_COMPRESSION_ZLIB 1
-#define REPLAY_CHECKPOINT2_COMPRESSION_ZSTD 2
+#define REPLAY_CHECKPOINT2_COMPRESSION_LZ4  2
+/* Back-compat alias: old name mapped to LZ4 implementation. */
+#define REPLAY_CHECKPOINT2_COMPRESSION_ZSTD REPLAY_CHECKPOINT2_COMPRESSION_LZ4
 
 /* Which encoding to use.
    RAW: Just raw checkpoint data, possibly compressed.

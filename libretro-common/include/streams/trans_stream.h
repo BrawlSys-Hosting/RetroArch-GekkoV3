@@ -96,10 +96,18 @@ bool trans_stream_trans_full(
 const struct trans_stream_backend* trans_stream_get_zlib_deflate_backend(void);
 const struct trans_stream_backend* trans_stream_get_zlib_inflate_backend(void);
 const struct trans_stream_backend* trans_stream_get_pipe_backend(void);
+#if defined(HAVE_LZ4)
+const struct trans_stream_backend* trans_stream_get_lz4_deflate_backend(void);
+const struct trans_stream_backend* trans_stream_get_lz4_inflate_backend(void);
+#endif
 
 extern const struct trans_stream_backend zlib_deflate_backend;
 extern const struct trans_stream_backend zlib_inflate_backend;
 extern const struct trans_stream_backend pipe_backend;
+#if defined(HAVE_LZ4)
+extern const struct trans_stream_backend lz4_deflate_backend;
+extern const struct trans_stream_backend lz4_inflate_backend;
+#endif
 
 RETRO_END_DECLS
 

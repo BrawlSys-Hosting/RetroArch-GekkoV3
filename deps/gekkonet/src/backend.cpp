@@ -1091,7 +1091,8 @@ void Gekko::MessageSystem::AddPendingInput(bool spectator)
 
     auto body = std::make_unique<InputMsg>();
 
-    body->total_size = (u16)comp.size();
+    /* Send the uncompressed byte count so the receiver can split per-player correctly. */
+    body->total_size = (u16)total_size;
 	body->input_count = (u8)send_list.size();
     /* Clamp start_frame to 0 to avoid sending negative frame indexes on first batch. */
     if (send_list.empty())

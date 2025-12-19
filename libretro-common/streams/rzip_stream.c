@@ -256,7 +256,12 @@ static bool rzipstream_init_stream(
    if (stream->is_writing)
    {
       /* Compression */
-      if (!(stream->deflate_backend = trans_stream_get_zlib_deflate_backend()))
+#if defined(HAVE_LZ4)
+      stream->deflate_backend = trans_stream_get_lz4_deflate_backend();
+#else
+      stream->deflate_backend = trans_stream_get_zlib_deflate_backend();
+#endif
+      if (!stream->deflate_backend)
          return false;
 
       if (!(stream->deflate_stream = stream->deflate_backend->stream_new()))
@@ -289,7 +294,12 @@ static bool rzipstream_init_stream(
    else if (stream->is_compressed)
    {
       /* Decompression */
-      if (!(stream->inflate_backend = trans_stream_get_zlib_inflate_backend()))
+#if defined(HAVE_LZ4)
+      stream->inflate_backend = trans_stream_get_lz4_inflate_backend();
+#else
+      stream->inflate_backend = trans_stream_get_zlib_inflate_backend();
+#endif
+      if (!stream->inflate_backend)
          return false;
 
       if (!(stream->inflate_stream = stream->inflate_backend->stream_new()))

@@ -290,6 +290,12 @@
 #define SUPPORTS_ZSTD false
 #endif
 
+#ifdef HAVE_LZ4
+#define SUPPORTS_LZ4 true
+#else
+#define SUPPORTS_LZ4 false
+#endif
+
 #ifdef HAVE_DYLIB
 #define SUPPORTS_DYLIB true
 #else

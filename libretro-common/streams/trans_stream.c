@@ -90,3 +90,15 @@ const struct trans_stream_backend* trans_stream_get_pipe_backend(void)
 {
    return &pipe_backend;
 }
+
+#if defined(HAVE_LZ4)
+const struct trans_stream_backend* trans_stream_get_lz4_deflate_backend(void)
+{
+   return &lz4_deflate_backend;
+}
+
+const struct trans_stream_backend* trans_stream_get_lz4_inflate_backend(void)
+{
+   return &lz4_inflate_backend;
+}
+#endif

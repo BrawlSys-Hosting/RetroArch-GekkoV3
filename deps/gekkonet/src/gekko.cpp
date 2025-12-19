@@ -403,6 +403,10 @@ void Gekko::Session::SendSessionHealthCheck()
         return;
     }
 
+    if (_last_saved_frame < confirmed) {
+        return;
+    }
+
     if (confirmed <= _last_sent_healthcheck) {
         return;
     }

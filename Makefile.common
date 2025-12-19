@@ -1987,6 +1987,18 @@ ifeq ($(HAVE_ZSTD),1)
    OBJ +=  $(ZSOBJ)
 endif
 
+ifeq ($(HAVE_LZ4),)
+   HAVE_LZ4 = 1
+endif
+
+ifeq ($(HAVE_LZ4),1)
+   INCLUDE_DIRS += -I$(DEPS_DIR)/lz4/lib
+   DEFINES += -DHAVE_LZ4
+   LZ4OBJ = $(DEPS_DIR)/lz4/lib/lz4.o \
+            $(LIBRETRO_COMM_DIR)/streams/trans_stream_lz4.o
+   OBJ += $(LZ4OBJ)
+endif
+
 ifeq ($(HAVE_IBXM), 1)
    DEFINES += -DHAVE_IBXM
    OBJ += $(DEPS_DIR)/ibxm/ibxm.o
@@ -2048,10 +2060,12 @@ endif
 
 ifeq ($(HAVE_ZLIB_COMMON), 1)
    OBJ += $(LIBRETRO_COMM_DIR)/file/archive_file_zlib.o \
-          $(LIBRETRO_COMM_DIR)/streams/trans_stream_zlib.o \
-          $(LIBRETRO_COMM_DIR)/streams/rzip_stream.o
+          $(LIBRETRO_COMM_DIR)/streams/trans_stream_zlib.o
    DEFINES += -DHAVE_ZLIB
    HAVE_COMPRESSION = 1
+
+   # RZIP stream supports multiple backends (zlib or LZ4).
+   OBJ += $(LIBRETRO_COMM_DIR)/streams/rzip_stream.o
 
    ifeq ($(HAVE_CHD), 1)
       INCLUDE_DIRS += -I$(LIBRETRO_COMM_DIR)/formats/libchdr
@@ -2167,6 +2181,20 @@ ifeq ($(HAVE_ZLIB_COMMON), 1)
          OBJ += $(LIBRETRO_COMM_DIR)/formats/libchdr/libchdr_zstd.o
       endif
    endif
+endif
+
+# Allow LZ4-only builds to provide compression for savestates/replays.
+ifeq ($(HAVE_LZ4),1)
+   HAVE_COMPRESSION = 1
+   # ensure RZIP stream is built even if zlib is absent
+   OBJ += $(LIBRETRO_COMM_DIR)/streams/rzip_stream.o
+endif
+
+# Allow LZ4-only builds to provide compression for savestates/replays.
+ifeq ($(HAVE_LZ4),1)
+   HAVE_COMPRESSION = 1
+   OBJ += $(LIBRETRO_COMM_DIR)/streams/trans_stream_lz4.o \
+          $(LIBRETRO_COMM_DIR)/streams/rzip_stream.o
 endif
 
 ifeq ($(HAVE_CDROM), 1)
