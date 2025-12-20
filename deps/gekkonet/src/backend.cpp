@@ -1015,8 +1015,10 @@ void Gekko::MessageSystem::OnSnapshotAck(NetAddress& addr, NetPacket& pkt)
     if (!body)
         return;
     if (body->complete && _session) {
-        /* Apply the snapshot locally on host when the client signals completion. */
-        _session->ApplyLocalSnapshot(_snapshot_send.buffer.data(),
+        /* Apply (or re-apply) the snapshot locally on host when the client
+         * signals completion, and queue a load event so the frontend can
+         * synchronize frame resumption. */
+        _session->QueueSnapshotApply(_snapshot_send.buffer.data(),
                                      (u32)_snapshot_send.buffer.size(),
                                      _snapshot_send.crc,
                                      _snapshot_send.frame);

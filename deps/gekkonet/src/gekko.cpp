@@ -18,6 +18,7 @@ Gekko::Session::Session()
 {
 	_host = nullptr;
 	_started = false;
+	_just_started = false;
     _delay_spectator = false;
     _last_saved_frame = GameInput::NULL_FRAME - 1;
 	_disconnected_input = nullptr;
@@ -207,6 +208,12 @@ GekkoGameEvent** Gekko::Session::UpdateSession(i32* count)
 
     // gameplay
     if (AllPlayersValid()) {
+        if (_just_started) {
+            _just_started = false;
+            *count = (i32)_current_game_events.size();
+            return _current_game_events.data();
+        }
+
         // reset the game event buffer before doing anything else
         _game_event_buffer.Reset();
 
@@ -568,6 +575,22 @@ bool Gekko::Session::AddAdvanceEvent(std::vector<GekkoGameEvent*>& ev, bool roll
         adv_tick++;
     }
 
+    /* Debug: compare host/client advance cadence. */
+    {
+        static unsigned adv_dbg = 0;
+        if (adv_dbg < 12 || (adv_dbg % 240) == 0) {
+            Frame min_recv = _sync.GetMinReceivedFrame();
+            std::cerr << "[gekkonet] ADV dbg frame=" << frame
+                      << " cur_sync=" << _sync.GetCurrentFrame()
+                      << " min_recv=" << min_recv
+                      << " pred_win=" << (int)_config.input_prediction_window
+                      << " locals=" << _msg.locals.size()
+                      << " remotes=" << _msg.remotes.size()
+                      << std::endl;
+        }
+        adv_dbg++;
+    }
+
 	return true;
 }
 
@@ -663,6 +686,7 @@ bool Gekko::Session::AllPlayersValid()
         _msg.session_events.AddSessionStartedEvent();
 
         _started = true;
+        _just_started = true;
 
 		return true;
 	}
@@ -725,6 +749,20 @@ void Gekko::Session::SendLocalInputs()
 
 		const Frame current = _msg.GetLastAddedInput(false) + 1;
         const Frame delay = GetMinLocalDelay();
+
+        /* Debug: capture local handle order and delay once. */
+        {
+            static bool logged_handles = false;
+            if (!logged_handles) {
+                std::cerr << "[gekkonet] LOCAL handles=";
+                for (size_t i = 0; i < handles.size(); i++) {
+                    std::cerr << (i == 0 ? "" : ",") << handles[i]
+                              << "(delay=" << (int)_sync.GetLocalDelay(handles[i]) << ")";
+                }
+                std::cerr << " min_delay=" << delay << std::endl;
+                logged_handles = true;
+            }
+        }
 
         std::unique_ptr<u8[]> inputs;
         for (Frame frame = current; frame <= current + delay; frame++) {

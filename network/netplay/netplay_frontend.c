@@ -322,13 +322,16 @@ static int netplay_gekkonet_pick_other_port(unsigned max_users, int primary_port
 static void netplay_gekkonet_reset(net_driver_state_t *net_st)
 {
    if (!net_st)
-      return;
+   return;
 
    if (net_st->gekkonet_active)
       ra_gekkonet_deinit(&net_st->gekkonet);
 
    memset(&net_st->gekkonet, 0, sizeof(net_st->gekkonet));
    memset(&net_st->gekkonet_input, 0, sizeof(net_st->gekkonet_input));
+   net_st->gekkonet.last_advance_frame  = -1;
+   net_st->gekkonet.last_load_frame     = -1;
+   net_st->gekkonet.last_snapshot_frame = -1;
    net_st->gekkonet_local_actor = -1;
    net_st->gekkonet_frame_consumed = false;
    net_st->gekkonet_running_frame  = false;
@@ -336,6 +339,9 @@ static void netplay_gekkonet_reset(net_driver_state_t *net_st)
    net_st->gekkonet_pending_runs   = 0;
    net_st->gekkonet_peer_connected = false;
    net_st->gekkonet_host_paused    = false;
+   net_st->gekkonet_sync_waiting   = false;
+   net_st->gekkonet_sync_frame     = -1;
+   net_st->gekkonet_sync_started   = 0;
    net_st->gekkonet_fast_catchup   = false;
    net_st->gekkonet_active      = false;
 }
@@ -474,7 +480,25 @@ static void netplay_gekkonet_session_event_cb(
                if (!ra_gekkonet_send_snapshot(&net_st->gekkonet))
                   RARCH_WARN("[GekkoNet] snapshot send failed\n");
                else
-                  RARCH_LOG("[GekkoNet] snapshot send started\n");
+               {
+                  int snap_frame = net_st->gekkonet.last_snapshot_frame;
+                  if (snap_frame < 0)
+                     snap_frame = net_st->gekkonet.last_advance_frame;
+                  if (snap_frame < 0)
+                     snap_frame = 0;
+                  net_st->gekkonet_sync_frame    = snap_frame;
+                  net_st->gekkonet_sync_waiting  = true;
+                  net_st->gekkonet_sync_started  = cpu_features_get_time_usec();
+                  net_st->gekkonet.last_load_frame = -1;
+                  net_st->gekkonet_pending_runs    = 0;
+                  net_st->gekkonet_has_frame       = false;
+                  net_st->gekkonet_frame_consumed  = false;
+                  net_st->gekkonet.queued_input_head = 0;
+                  net_st->gekkonet.queued_input_count = 0;
+                  net_st->gekkonet_host_paused     = true;
+                  RARCH_LOG("[GekkoNet] snapshot send started (frame=%d); waiting for client to align\n",
+                        net_st->gekkonet_sync_frame);
+               }
             }
          }
          break;
@@ -688,6 +712,67 @@ static bool netplay_gekkonet_frame(net_driver_state_t *net_st)
             netplay_lan_ad_server(net_st->gekkonet.bound_port, nick);
       }
 #endif
+   }
+
+   /* If a snapshot sync is in progress, keep pumping the network but hold emulation
+    * until both sides report the same frame. */
+   if (net_st->gekkonet_sync_waiting)
+   {
+      ra_gekkonet_update(&net_st->gekkonet);
+
+      if (net_st->gekkonet.last_load_frame < 0)
+      {
+         retro_time_t now = cpu_features_get_time_usec();
+         if (net_st->gekkonet_sync_started &&
+               (now - net_st->gekkonet_sync_started) > 2000000) /* 2s safety */
+         {
+            /* Deadlock fallback: accept the snapshot frame even if we never saw a load. */
+            int fallback_frame = net_st->gekkonet_sync_frame >= 0
+               ? net_st->gekkonet_sync_frame
+               : (net_st->gekkonet.last_snapshot_frame >= 0
+                  ? net_st->gekkonet.last_snapshot_frame
+                  : 0);
+            net_st->gekkonet.last_load_frame = fallback_frame;
+            RARCH_WARN("[GekkoNet] snapshot load not observed after timeout; forcing resume at frame %d\n",
+                  fallback_frame);
+         }
+         else
+         {
+            if (!net_st->gekkonet_host_paused)
+            {
+               net_st->gekkonet_host_paused = true;
+               RARCH_LOG("[GekkoNet] waiting for snapshot to apply; pausing core advance\n");
+            }
+            return false;
+         }
+      }
+
+      if (net_st->gekkonet_sync_frame >= 0 &&
+            net_st->gekkonet.last_load_frame != net_st->gekkonet_sync_frame)
+      {
+         retro_time_t now = cpu_features_get_time_usec();
+         /* If we've waited long enough, trust the applied load; otherwise, keep waiting. */
+         if (net_st->gekkonet_sync_started &&
+               (now - net_st->gekkonet_sync_started) < 1000000) /* 1s */
+         {
+            RARCH_WARN("[GekkoNet] snapshot frame mismatch (expected %d, got %d); still waiting\n",
+                  net_st->gekkonet_sync_frame,
+                  net_st->gekkonet.last_load_frame);
+            return false;
+         }
+         net_st->gekkonet_sync_frame = net_st->gekkonet.last_load_frame;
+         RARCH_WARN("[GekkoNet] snapshot frame mismatch but timeout expired; accepting frame %d\n",
+               net_st->gekkonet_sync_frame);
+      }
+
+      if (net_st->gekkonet_sync_frame < 0)
+         net_st->gekkonet_sync_frame = net_st->gekkonet.last_load_frame;
+
+      net_st->gekkonet_sync_waiting    = false;
+      net_st->gekkonet_sync_started    = 0;
+      net_st->gekkonet_host_paused     = false;
+      RARCH_LOG("[GekkoNet] snapshot sync confirmed at frame %d; resuming emulation\n",
+            net_st->gekkonet_sync_frame);
    }
 
    /* One-time deferred init-state load (after core is fully up). */
@@ -1220,6 +1305,17 @@ static bool netplay_gekkonet_init_session(net_driver_state_t *net_st,
       RARCH_LOG("[GekkoNet] acting as client\n");
    else
       RARCH_LOG("[GekkoNet] acting as host\n");
+   net_st->gekkonet.last_advance_frame  = -1;
+   net_st->gekkonet.last_load_frame     = -1;
+   net_st->gekkonet.last_snapshot_frame = -1;
+   net_st->gekkonet_sync_frame          = -1;
+   net_st->gekkonet_sync_waiting        =
+      (net_st->flags & NET_DRIVER_ST_FLAG_NETPLAY_IS_CLIENT) ? true : false;
+   net_st->gekkonet_sync_started        = net_st->gekkonet_sync_waiting
+      ? cpu_features_get_time_usec()
+      : 0;
+   if (net_st->gekkonet_sync_waiting)
+      RARCH_LOG("[GekkoNet] waiting for host snapshot before resuming emulation\n");
    return true;
 }
 
@@ -1516,8 +1612,6 @@ static bool init_lan_ad_server_socket(void)
          socket_close(fd);
 
       net_st->lan_ad_server_fd = -1;
-
-      RARCH_ERR("[Discovery] Failed to initialize netplay advertisement socket.\n");
    }
 
    if (addr)

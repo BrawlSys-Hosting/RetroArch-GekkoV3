@@ -170,6 +170,9 @@ typedef struct
    unsigned int         gekkonet_pending_runs;
    bool                 gekkonet_peer_connected;
    bool                 gekkonet_host_paused;
+   bool                 gekkonet_sync_waiting;
+   int                  gekkonet_sync_frame;
+   uint64_t             gekkonet_sync_started;
    bool                 gekkonet_fast_catchup; /* client-side fast-forward flag */
    bool                 gekkonet_active;
    netplay_backend_t    backend;

@@ -49,21 +49,16 @@
 
 #include "netplay_gekkonet.h"
 
-/* Simple logging macros. Prefer RetroArch's logger when available so
- * messages show up in the normal log. Fallback to stderr otherwise.
+/* Simple logging macros. Prefer RetroArch's logger so messages land in
+ * the normal log even in builds that don't define HAVE_CONFIG_H (e.g.,
+ * some MSVC project files). Fallback to stderr if the logger macros
+ * aren't available.
  */
 #ifndef GEKKONET_LOG
-#ifdef HAVE_CONFIG_H
 #include "../../verbosity.h"
 #define GEKKONET_LOG(fmt, ...)  RARCH_LOG("[gekkonet] " fmt "\n", ##__VA_ARGS__)
 #define GEKKONET_WARN(fmt, ...) RARCH_WARN("[gekkonet] " fmt "\n", ##__VA_ARGS__)
 #define GEKKONET_ERR(fmt, ...)  RARCH_ERR("[gekkonet] " fmt "\n", ##__VA_ARGS__)
-#else
-#include <stdio.h>
-#define GEKKONET_LOG(fmt, ...)
-#define GEKKONET_WARN(fmt, ...)
-#define GEKKONET_ERR(fmt, ...)
-#endif
 #endif
 
 /* Simple portable string copy helper (no strlcpy on MSVC). */
@@ -961,6 +956,9 @@ bool ra_gekkonet_init(ra_gekkonet_ctx_t              *ctx,
    ctx->queued_input_count = 0;
    ctx->queued_input_cap   = 0;
    ctx->input_blob_size    = 0;
+   ctx->last_advance_frame  = -1;
+   ctx->last_load_frame     = -1;
+   ctx->last_snapshot_frame = -1;
 
     if (!gekko_create(&ctx->session))
     {
@@ -1367,6 +1365,12 @@ bool ra_gekkonet_send_snapshot(ra_gekkonet_ctx_t *ctx)
     if (out_size == 0 || out_size > ctx->state_size)
         out_size = ctx->state_size;
 
+    /* Stamp snapshots with the most recent known frame so peers can align. */
+    unsigned int snap_frame = ctx->last_advance_frame >= 0
+       ? (unsigned int)ctx->last_advance_frame
+       : 0;
+    ctx->last_snapshot_frame = (int)snap_frame;
+
     /* Compute CRC if callback did not provide one. */
     if (crc == 0)
     {
@@ -1384,11 +1388,12 @@ bool ra_gekkonet_send_snapshot(ra_gekkonet_ctx_t *ctx)
     /* Prefer TCP snapshot channel for reliability/speed. Fallback to UDP if TCP fails. */
     bool sent = false;
     if (ctx->tcp_port)
-        sent = ra_gekkonet_tcp_send_snapshot(ctx, buf, out_size, crc, 0);
+        sent = ra_gekkonet_tcp_send_snapshot(ctx, buf, out_size, crc, snap_frame);
     if (!sent)
-        sent = gekko_send_snapshot(ctx->session, buf, out_size, crc, 0);
+        sent = gekko_send_snapshot(ctx->session, buf, out_size, crc, snap_frame);
     if (sent)
-        GEKKONET_LOG("snapshot send started (size=%u crc=%08X via %s)", out_size, crc,
+        GEKKONET_LOG("snapshot send started (size=%u crc=%08X frame=%u via %s)",
+                     out_size, crc, snap_frame,
                      (ctx->tcp_port && ctx->tcp_fd >= 0) ? "TCP" : "UDP");
     else
         GEKKONET_WARN("snapshot send failed");
@@ -1432,29 +1437,46 @@ static void ra_gekkonet_handle_load(ra_gekkonet_ctx_t    *ctx,
     if (!ev->data.load.state || ev->data.load.state_len == 0)
         return;
 
-    if (!ctx->load_cb(ev->data.load.state, ev->data.load.state_len))
-    {
-        GEKKONET_WARN("load_state callback failed (frame=%d, len=%u)",
-            ev->data.load.frame, ev->data.load.state_len);
-        return;
-    }
+   if (!ctx->load_cb(ev->data.load.state, ev->data.load.state_len))
+   {
+       GEKKONET_WARN("load_state callback failed (frame=%d, len=%u)",
+           ev->data.load.frame, ev->data.load.state_len);
+       return;
+   }
 
-    GEKKONET_LOG("load frame=%d len=%u", ev->data.load.frame, ev->data.load.state_len);
+   ctx->last_load_frame = ev->data.load.frame;
+   GEKKONET_LOG("load frame=%d len=%u", ev->data.load.frame, ev->data.load.state_len);
 }
 
 static void ra_gekkonet_handle_advance(ra_gekkonet_ctx_t    *ctx,
                                        const GekkoGameEvent *ev)
 {
    if (!ctx || !ev)
-       return;
+      return;
 
-    if (!ctx->current_input_buf || !ev->data.adv.inputs)
-        return;
+   if (!ctx->current_input_buf || !ev->data.adv.inputs)
+      return;
 
-    {
-        size_t cap = (size_t)ctx->input_size * MAX_USERS;
-        size_t blob_sz = ctx->input_blob_size ? ctx->input_blob_size : cap;
-        unsigned int to_copy = ev->data.adv.input_len;
+   ctx->last_advance_frame = ev->data.adv.frame;
+
+   /* One-time dump of actor handle ordering. */
+   {
+      static bool logged_handles = false;
+      if (!logged_handles)
+      {
+         GEKKONET_WARN("ADV dbg handles (join order): count=%d locals=%d remotes=%d",
+            ctx->actor_count, ctx->local_actor_count, ctx->remote_actor_count);
+         for (int i = 0; i < ctx->actor_count && i < MAX_USERS; i++)
+            GEKKONET_WARN("ADV dbg handle[%d]=%d port=%d",
+               i, ctx->actor_handles[i], ctx->actor_ports[i]);
+         logged_handles = true;
+      }
+   }
+
+   {
+      size_t cap = (size_t)ctx->input_size * MAX_USERS;
+      size_t blob_sz = ctx->input_blob_size ? ctx->input_blob_size : cap;
+      unsigned int to_copy = ev->data.adv.input_len;
         if (cap == 0)
             return;
         if (to_copy > blob_sz)
@@ -1499,16 +1521,34 @@ static void ra_gekkonet_handle_advance(ra_gekkonet_ctx_t    *ctx,
                 memcpy(buf, tmp, tmp_sz);
                 free(tmp);
             }
-        }
-    }
+      }
+   }
 
-    ctx->current_input = ctx->current_input_buf;
+   ctx->current_input = ctx->current_input_buf;
 
-    if (!ra_gekkonet_enqueue_current_input(ctx))
-        GEKKONET_WARN("advance input enqueue failed; dropping frame=%d", ev->data.adv.frame);
+   /* Throttled per-advance debug to compare host/client cadence. */
+   {
+      static unsigned adv_dbg = 0;
+      if (adv_dbg < 20 || (adv_dbg % 120) == 0)
+      {
+         float ahead = ctx->session ? gekko_frames_ahead(ctx->session) : 0.f;
+         GEKKONET_WARN("ADV dbg frame=%d rollback=%d queued=%zu frames_ahead=%.2f actors=%d locals=%d remotes=%d",
+            ev->data.adv.frame,
+            ev->data.adv.rolling_back,
+            ctx->queued_input_count,
+            ahead,
+            ctx->actor_count,
+            ctx->local_actor_count,
+            ctx->remote_actor_count);
+      }
+      adv_dbg++;
+   }
 
-    GEKKONET_LOG("advance frame=%d len=%u rollback=%d (cfg input_size=%u players=%u)",
-        ev->data.adv.frame,
+   if (!ra_gekkonet_enqueue_current_input(ctx))
+      GEKKONET_WARN("advance input enqueue failed; dropping frame=%d", ev->data.adv.frame);
+
+   GEKKONET_LOG("advance frame=%d len=%u rollback=%d (cfg input_size=%u players=%u)",
+      ev->data.adv.frame,
         ev->data.adv.input_len,
         ev->data.adv.rolling_back,
         (unsigned)ctx->cfg.input_size,
@@ -1630,14 +1670,25 @@ static void ra_gekkonet_process_session_events(ra_gekkonet_ctx_t *ctx)
  */
 void ra_gekkonet_update(ra_gekkonet_ctx_t *ctx)
 {
-    if (!ctx || !ctx->session || !ctx->active)
-        return;
+   if (!ctx || !ctx->session || !ctx->active)
+      return;
 
-    /* Maintain TCP snapshot channel (accept/connect + poll). */
-    if (ctx->tcp_port)
-    {
-        ra_gekkonet_tcp_ensure_connection(ctx);
-        ra_gekkonet_poll_tcp_snapshot(ctx);
+   /* Top-level heartbeat to confirm netplay loop is running. */
+   {
+      static unsigned dbg_tick = 0;
+      if (dbg_tick < 5 || (dbg_tick % 300) == 0)
+         GEKKONET_WARN("ADV dbg top: active=%d queued=%zu ready_state=%d",
+            ctx->active,
+            ctx->queued_input_count,
+            ctx->ready_for_state);
+      dbg_tick++;
+   }
+
+   /* Maintain TCP snapshot channel (accept/connect + poll). */
+   if (ctx->tcp_port)
+   {
+      ra_gekkonet_tcp_ensure_connection(ctx);
+      ra_gekkonet_poll_tcp_snapshot(ctx);
     }
 
     /* Let GekkoNet process incoming/outgoing packets. */

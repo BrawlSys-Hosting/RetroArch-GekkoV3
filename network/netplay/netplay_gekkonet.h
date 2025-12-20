@@ -113,6 +113,9 @@ typedef struct ra_gekkonet_ctx
    size_t         queued_input_count;
    size_t         queued_input_cap;
    size_t         input_blob_size;
+   int            last_advance_frame;
+   int            last_load_frame;
+   int            last_snapshot_frame;
 
    bool ready_for_state;
    bool owns_adapter;

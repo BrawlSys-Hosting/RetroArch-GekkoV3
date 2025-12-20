@@ -101,6 +101,7 @@ namespace Gekko {
 
 	private:
 		bool _started;
+		bool _just_started;
 
         bool _delay_spectator;
 
